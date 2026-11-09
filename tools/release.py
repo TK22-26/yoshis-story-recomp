@@ -37,8 +37,8 @@ def dependencies():
 def metadata(tag, require_tag=False):
     version = re.search(r"project\(yoshis_story_recomp VERSION ([0-9]+\.[0-9]+\.[0-9]+)\)",
                         (ROOT / "CMakeLists.txt").read_text(encoding="utf-8"))[1]
-    if tag != "v" + version:
-        raise ValueError("Release tag must match CMake version: v" + version)
+    if tag != "windows-v" + version:
+        raise ValueError("Windows release tag must match CMake version: windows-v" + version)
     source = command("git", "rev-parse", "HEAD")
     if command("git", "status", "--porcelain", "--untracked-files=normal", "--ignore-submodules=dirty"):
         raise ValueError("Release source must be committed and clean")

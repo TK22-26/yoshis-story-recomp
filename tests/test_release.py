@@ -19,7 +19,7 @@ class ReleaseVerification(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.output = Path(self.temp.name)
-        self.expected = {"version": "1.0.0", "tag": "v1.0.0", "source": "a" * 40, "dependencies": {}}
+        self.expected = {"version": "1.0.0", "tag": "windows-v1.0.0", "source": "a" * 40, "dependencies": {}}
         self.archive, self.inventory, self.checksum = release.paths(self.output, "1.0.0")
         self.files = {name: b"MZsynthetic test program" for name in check_package.PROGRAMS}
         self.files.update({name: (ROOT / name).read_bytes() for name in check_package.document_names(ROOT)})

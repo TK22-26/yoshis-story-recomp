@@ -2,7 +2,7 @@ name: Verify or publish Windows release
 
 on:
   push:
-    tags: ['v*']
+    tags: ['windows-v*']
   workflow_dispatch:
     inputs:
       publish:
