@@ -96,6 +96,9 @@ foreach(RT64_PATCH ${RT64_PATCHES})
     endif()
 endforeach()
 
+# The game-specific RT64 patch and standalone regression test share this rule.
+# RT64 already includes the generated-header directory below.
+configure_file(src/yoshi_texture_bounds.h "${CMAKE_BINARY_DIR}/src/yoshi_texture_bounds.h" COPYONLY)
 add_subdirectory("${RT64_PATH}" rt64_build)
 
 if(WIN32)
@@ -295,5 +298,8 @@ if(WIN32)
         target_include_directories(game_pause_test PRIVATE src)
         target_link_libraries(game_pause_test PRIVATE Threads::Threads)
         add_test(NAME game_pause COMMAND game_pause_test)
+        add_executable(texture_bounds_test tests/texture_bounds_test.cpp)
+        target_include_directories(texture_bounds_test PRIVATE src)
+        add_test(NAME texture_bounds COMMAND texture_bounds_test)
     endif()
 endif()

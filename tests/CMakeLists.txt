@@ -16,3 +16,7 @@ add_executable(game_pause_test game_pause_test.cpp ../src/game_pause.cpp)
 target_include_directories(game_pause_test PRIVATE ../src)
 target_link_libraries(game_pause_test PRIVATE Threads::Threads)
 add_test(NAME game_pause COMMAND game_pause_test)
+
+add_executable(texture_bounds_test texture_bounds_test.cpp)
+target_include_directories(texture_bounds_test PRIVATE ../src)
+add_test(NAME texture_bounds COMMAND texture_bounds_test)

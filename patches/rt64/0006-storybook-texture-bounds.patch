@@ -1,0 +1,40 @@
+diff --git a/src/hle/rt64_state.cpp b/src/hle/rt64_state.cpp
+--- a/src/hle/rt64_state.cpp
++++ b/src/hle/rt64_state.cpp
+@@ -21,6 +21,7 @@
+ 
+ #include "rt64_application.h"
+ #include "rt64_interpreter.h"
++#include "yoshi_texture_bounds.h"
+ 
+ //#define ASSERT_ON_BLENDER_EMULATION
+ #define SYNC_ON_EVERY_FB_PAIR 0
+@@ -1052,6 +1053,28 @@
+                             const DrawCallTile &callTile = callTiles[callDesc.tileIndex + t];
+                             if (callTile.rawTMEM) {
+                                 flags.canDecodeTMEM = true;
++                            }
++
++                            // Yoshi's storybook panels are CI4 quads with mirror
++                            // masks larger than their image strips. Clamp only
++                            // axes whose tracked UVs cover a single tile; otherwise
++                            // bilerp reads stale TMEM beyond the strip at the join.
++                            const auto &tile = callTile.loadTile;
++                            if (proj.usesViewport() && callDesc.triangleCount == 2 &&
++                                callDesc.tileCount == 1 && !callTile.tileCopyUsed &&
++                                tile.fmt == G_IM_FMT_CI && tile.siz == G_IM_SIZ_4b &&
++                                callDesc.otherMode.textPersp() == G_TP_PERSP &&
++                                callDesc.otherMode.textFilt() == G_TF_BILERP) {
++                                auto &sampleTile = workload.drawData.rdpTiles[callDesc.tileIndex + t];
++                                const bool clampS = yoshi::graphics::clamp_sprite_tile_axis(
++                                    callTile.minTexcoord.x, callTile.maxTexcoord.x, ShiftScaleMap[tile.shifts],
++                                    tile.uls, tile.lrs, tile.masks, tile.cms);
++                                const bool clampT = yoshi::graphics::clamp_sprite_tile_axis(
++                                    callTile.minTexcoord.y, callTile.maxTexcoord.y, ShiftScaleMap[tile.shiftt],
++                                    tile.ult, tile.lrt, tile.maskt, tile.cmt);
++                                if (clampS) sampleTile.cms |= G_TX_CLAMP;
++                                if (clampT) sampleTile.cmt |= G_TX_CLAMP;
++                                if (clampS || clampT) sampleTile.nativeSampler = NATIVE_SAMPLER_NONE;
+                             }
+ 
+                             if (callTile.syncRequired && !callTile.tileCopyUsed) {
