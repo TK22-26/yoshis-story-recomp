@@ -1,43 +1,44 @@
 # Yoshi's Story Recomp
 
-A native PC port of Yoshi's Story (N64, US) built with static recompilation.
-You supply the ROM; this repo supplies everything else.
+[![Windows checks](https://github.com/TK22-26/yoshis-story-recomp/actions/workflows/windows.yml/badge.svg?branch=main)](https://github.com/TK22-26/yoshis-story-recomp/actions/workflows/windows.yml)
 
-This fork adds native **Windows x64** support to
-[damobeanrod's Linux port](https://github.com/damobeanrod/yoshis-story-recomp).
-No ROM, textures, music, or other extracted Nintendo assets are included.
-The original project-created egg icon is retained.
+A native **Windows x64** recompilation of Yoshi's Story for Nintendo 64.
+**Version 1.0.0 supports the original USA ROM.** Extract the Windows package,
+add your own ROM, and play. No developer tools or first-run compilation are needed.
 
-Uses [N64Recomp](https://github.com/N64Recomp/N64Recomp),
-[N64ModernRuntime](https://github.com/N64Recomp/N64ModernRuntime) and
-[RT64](https://github.com/rt64/rt64).
+[Windows downloads](https://github.com/TK22-26/yoshis-story-recomp/releases) |
+[Install and play](#getting-started-on-windows) | [Controls](#controls) |
+[Changelog](CHANGELOG.md) | [Release verification and limits](https://github.com/TK22-26/yoshis-story-recomp/blob/main/docs/releases/1.0.0.md)
 
----
+This is TK22-26's Windows fork of
+[damobeanrod's Linux port](https://github.com/damobeanrod/yoshis-story-recomp),
+built with [N64Recomp](https://github.com/N64Recomp/N64Recomp),
+[N64ModernRuntime](https://github.com/N64Recomp/N64ModernRuntime), and
+[RT64](https://github.com/rt64/rt64). The Windows work uses AI assistance under
+maintainer direction, review, and playtesting; upstream authorship is credited below.
 
-> **⚠️ AI-generated project — please read before using or contributing**
->
-> The original Linux port was created primarily by [Claude](https://claude.ai) (Anthropic's
-> AI assistant), directed by a hobbyist with no prior N64 or graphics
-> programming experience. Almost all of the C++, Python tooling, CMake, and
-> RT64 patches in this repo were written by Claude in an interactive session —
-> what the community calls "vibe coding."
->
-> The code works and the game is fully playable, but it has not been written or
-> reviewed by experienced graphics or systems programmers. There will be rough
-> edges, non-idiomatic patterns, and corners that were never examined. If you
-> are considering upstreaming any of the RT64 patches or runtime changes,
-> please scrutinise them carefully before doing so.
->
-> The underlying tools that make this possible — N64Recomp, N64ModernRuntime,
-> RT64, and the Yoshi's Story decompilation — are the work of talented,
-> experienced humans. See **Credits** below.
+**No ROMs or extracted game assets are included.** Textures, audio, models, and
+other game data come from your own local ROM. The package contains compiled
+programs, host libraries, documentation, and the approved original/interface art
+listed in [assets/README.md](https://github.com/TK22-26/yoshis-story-recomp/blob/main/assets/README.md).
 
----
+## Windows features
+
+| Feature | Details |
+| --- | --- |
+| Native rendering | Direct3D 12 by default, Vulkan fallback, resolution scaling, anti-aliasing, filtering, and optional CRT effects |
+| Desktop interface | Compact top menu, green theme, native owned settings dialogs, installed Windows fonts, and DPI-aware diagrams |
+| Window modes | Windowed, borderless window, and borderless fullscreen with corrected monitor coverage |
+| Controls | Saved controller selection; keyboard, button, trigger, and stick-direction rebinding; one controller input per action |
+| Controller glyphs | Xbox labels and PlayStation shapes, triangular triggers, and rectangular bumpers |
+| Playback controls | Pause/resume, mute/unmute, persistent volume, and F1 menu visibility |
+| Rendering correction | Storybook texture-boundary fix tested on Windows and separately against upstream Linux source |
+| Portable package | Runtime DLLs, setup guide, notices, source identity, SHA-256 checksum, and per-file inventory |
 
 ## Requirements
 
 - A Yoshi's Story (US) ROM: `yoshis_story.z64`
-- A Vulkan-capable GPU and driver (Windows also supports Direct3D 12)
+- A Direct3D 12-capable GPU/driver on Windows, or Vulkan for the fallback renderer and Linux
 - Windows 10 version 1803 or newer, x64; or Linux (Ubuntu 24.04+ or equivalent; NixOS also supported)
 
 ## Windows validation
@@ -47,7 +48,9 @@ separate working directory, keyboard/controller input, EEPROM save creation,
 owned settings windows, pause/resume, restart, and all three window modes.
 Fullscreen client/frame bounds match the physical monitor; exiting restores
 the previous window size and style. Automated tests cover RDRAM aliases,
-the pause clock, and texture boundary selection without a ROM.
+the pause clock, texture boundaries, axis rebinding and persistence, and SDL
+controller selection/reconnect without a ROM. Release checks additionally verify
+the package inventory, checksums, and compiled source identity.
 
 The storybook seam correction was also tested separately on upstream Linux
 source under Ubuntu 26.04 / WSL2 / Vulkan, after reproducing the seams in the
@@ -62,28 +65,41 @@ retested.
 
 ## Getting started on Windows
 
-Extract the Windows ZIP into a writable folder. Keep `SDL2.dll`,
-`dxcompiler.dll`, and `dxil.dll` beside `yoshis_story_recomp.exe`.
-Put your own US ROM at `data/yoshis_story.z64`, then run the executable.
-The launcher, keyboard/controller input, settings, and saves work through SDL2.
-The console displays diagnostic messages while the game is running.
+1. Download `Yoshis-Story-1.0.0-windows-x64.zip` from the
+   [releases page](https://github.com/TK22-26/yoshis-story-recomp/releases).
+2. Extract the entire ZIP into a writable folder. Keep all DLLs beside
+   `yoshis_story_recomp.exe`.
+3. Put your own USA ROM at `data/yoshis_story.z64`.
+4. Open `yoshis_story_recomp.exe`, choose your settings, and start the game.
+
+The package includes `START HERE.txt` and the Microsoft Visual C++ runtime.
+Git, Python, Visual Studio, and WSL are not needed to play. The console displays
+runtime diagnostics. Only the USA ROM is supported.
 
 ```text
 yoshis_story_recomp.exe
 SDL2.dll
 dxcompiler.dll
 dxil.dll
+msvcp140*.dll, vcruntime140*.dll, other runtime DLLs
 data/
   yoshis_story.z64       <- supplied locally by you
   saves/                <- created by the game
 ```
 
-Install the [Microsoft Visual C++ x64 runtime](https://aka.ms/vs/17/release/vc_redist.x64.exe)
-if Windows reports a missing `VCRUNTIME140` or `MSVCP140` DLL. Use a current
-GPU driver. The Windows renderer chooses Direct3D 12 by default and can fall
-back to Vulkan. The game reserves a 4 GiB address range; Windows needs about
+Use a current GPU driver. The Windows renderer chooses Direct3D 12 by default
+and can fall back to Vulkan. The game reserves a 4 GiB address range; Windows needs about
 4 GiB of available memory/page-file commit, although physical pages are
 populated as they are used.
+
+Before updating, back up `data/`. Extract a new version into a separate folder
+and copy your existing data folder across to retain the ROM, saves, and settings.
+The release's empty data folder contains no personal files.
+
+Each release has a matching `.sha256` file and `.inventory.json`. To check your
+ZIP in PowerShell, run `Get-FileHash .\Yoshis-Story-1.0.0-windows-x64.zip -Algorithm SHA256`
+and compare it with the checksum file. Maintainer preparation and publication
+are described in [the release guide](https://github.com/TK22-26/yoshis-story-recomp/blob/main/docs/releases/maintenance.md).
 
 ## Build from source on Windows
 
@@ -106,14 +122,15 @@ powershell -ExecutionPolicy Bypass -File tools/build_windows.ps1 -Rom 'C:\Games\
 
 The helper downloads SDL 2.32.10 with a pinned SHA-256, checks out
 N64ModernRuntime at `cdf5abbd5026fef5c364c676e4667c45e42b6863` under `.deps/`,
-builds the game and RSP audio recompiler, and runs the memory and pause tests.
+builds the game and RSP audio recompiler, and runs the five runtime/input tests.
 The ROM is copied only to the ignored local `data/` directory. Generated
 audio code stays under `build/rsp/`.
 
 `-Package` creates `dist/yoshis-story-recomp-windows-x64.zip`. Packaging uses
 an explicit executable/DLL/documentation list and creates an empty `data/`
 folder; it never copies your ROM, saves, settings, or generated source files.
-`tools/check_package.py` rejects files outside the program/documentation allowlist.
+`tools/check_package.py` rejects files outside the program/documentation allowlist;
+the CRT libraries are required members.
 
 For an existing dependency setup, run from an x64 developer shell with LLVM
 and Ninja on `PATH`:
@@ -127,8 +144,8 @@ ctest --test-dir build --output-on-failure
 cpack --config build/CPackConfig.cmake -B dist -C Release
 ```
 
-The Windows CI test checks shared RDRAM aliases, independent hardware-register
-memory, the full address range, and cleanup without any ROM. A full game
+Windows CI runs the memory, pause, texture-boundary, input-binding, virtual-controller,
+and release-metadata checks without a ROM. A full game
 build and gameplay test require a locally supplied ROM. Runtime changes are
 reproducible patches in `patches/runtime/`; Linux retains its existing memory
 and SDL/Vulkan paths.
@@ -313,17 +330,17 @@ on Windows and `~/.config/.yoshis_story_recomp/` on Linux.
 
 ## Controls
 
-Any SDL-supported controller works (hot-plug supported) alongside the
-keyboard simultaneously. Rumble is forwarded to the controller.
+SDL-supported gamepads are selectable in Controls and work alongside the
+keyboard. Device availability and feature support depend on the SDL mapping. Rumble is forwarded to the controller.
 
 | N64 | Keyboard | Controller (Xbox layout) |
 | --- | --- | --- |
 | Stick | WASD / arrow keys | Left stick |
-| A | Space / X | A |
-| B | Left Shift / C | X |
+| A | Space | A |
+| B | Left Shift | X |
 | Z | Z | Left trigger |
 | Start | Enter | Start |
-| L / R | Q / E | LB / RB (RT = R too) |
+| L / R | Q / E | LB / RB |
 | C buttons | I J K L | Right stick |
 | D-pad | T F G H | D-pad |
 
@@ -443,16 +460,24 @@ renderer that drives all 3D and 2D output.
 team** produced the matching decompilation of the game whose ELF was used
 to generate `recomp_funcs/`.
 
-### This port
+### Upstream Linux port
 
-The port was directed by **damobeanrod** (concept, testing, and engineering
+The original port was directed by **damobeanrod** (concept, testing, and engineering
 decisions) and implemented almost entirely by
 **[Claude](https://claude.ai)** (Anthropic's AI assistant), which wrote the
 C++ runtime glue, launcher, in-game overlay, audio, input, RT64 patches,
 Python tooling, and CMake build system through an extended interactive
 session.
 
-The app icon was hand-designed and generated by `tools/gen_icon.py`.
+### Windows fork
+
+**[TK22-26](https://github.com/TK22-26)** directed and reviewed the Windows port,
+settings designs, controller diagrams, and local playtesting with **OpenAI Codex**
+assistance. The desktop menu and release process follow the maintainer's
+[Jet Force Gemini Recomp](https://github.com/TK22-26/JetForceGemini-Recomp) project.
+
+The original project egg is generated by `tools/gen_icon.py`. GitHub's mark and
+the supplied controller diagrams are documented in [assets/README.md](https://github.com/TK22-26/yoshis-story-recomp/blob/main/assets/README.md).
 
 ### Third-party libraries
 
@@ -460,6 +485,7 @@ The app icon was hand-designed and generated by `tools/gen_icon.py`.
 - [RT64](https://github.com/rt64/rt64) — Dario and contributors
 - [SDL2](https://www.libsdl.org/)
 - [Dear ImGui](https://github.com/ocornut/imgui)
+- [NanoSVG](https://github.com/memononen/nanosvg)
 
 ---
 

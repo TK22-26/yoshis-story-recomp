@@ -3,6 +3,7 @@ on:
   push:
   pull_request:
   workflow_dispatch:
+  workflow_call:
 permissions:
   contents: read
 jobs:
@@ -24,3 +25,5 @@ jobs:
       - run: cmake -S tests -B build-tests -A x64 "-DSDL2_DIR=$env:RUNNER_TEMP/SDL2-2.32.10/cmake"
       - run: cmake --build build-tests --config Release
       - run: ctest --test-dir build-tests -C Release --output-on-failure
+      - name: Check release verification regressions
+        run: python -m unittest discover -s tests -p test_release.py -v

@@ -1,0 +1,30 @@
+Yoshi's Story Recomp 1.0.0 - Windows x64
+
+1. Extract the entire ZIP into a writable folder.
+2. Put your own USA Yoshi's Story ROM at data/yoshis_story.z64.
+3. Open yoshis_story_recomp.exe and choose Start in the settings launcher.
+
+Keep all DLLs beside the executable. The Microsoft Visual C++ runtime is
+included. No Git, Python, Visual Studio, WSL, or first-run compilation is needed.
+
+Windows 10 version 1803 or newer, x64, and a compatible Direct3D 12 or Vulkan
+GPU/driver are required. Windows 11 with Direct3D 12 was tested.
+Only the USA ROM is supported. No ROM, extracted game assets, personal saves,
+recordings, generated source, or debug symbols are included.
+
+Controls menu: select your controller and rebind inputs.
+Esc / controller Back: settings. F1: show/hide the menu.
+Pause: pause/resume. Ctrl+M: mute/unmute. Alt+F4: quit.
+F11 / Alt+Enter: toggle borderless fullscreen.
+
+The data folder holds your ROM, saves, and settings. Back it up before updating.
+Extract updates into a new folder and copy your existing data folder across.
+Do not overwrite personal files with a release's empty data folder.
+
+Project and documentation: https://github.com/TK22-26/yoshis-story-recomp
+Downloads: https://github.com/TK22-26/yoshis-story-recomp/releases
+Report issues: https://github.com/TK22-26/yoshis-story-recomp/issues
+Include your Windows version, GPU/driver, renderer, controller, and steps to
+reproduce. Never attach your ROM, game assets, or personal saves to a report.
+
+See README.md, CHANGELOG.md, THIRD_PARTY_NOTICES.md, and licenses/ for details.

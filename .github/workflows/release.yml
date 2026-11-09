@@ -1,0 +1,71 @@
+name: Verify or publish Windows release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: 'Publish the verified draft (requires publication authorization)'
+        type: boolean
+        default: false
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  source:
+    name: Check version tag and main ancestry
+    runs-on: windows-2022
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Require a version tag
+        env:
+          RELEASE_REF_TYPE: ${{ github.ref_type }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          if ($env:RELEASE_REF_TYPE -ne 'tag') { throw 'Choose an existing version tag, not a branch.' }
+          python tools/release.py check --tag $env:RELEASE_TAG --require-tag
+
+  tests:
+    name: Test the tagged source without a ROM
+    needs: source
+    uses: ./.github/workflows/windows.yml
+
+  bundle:
+    name: Verify the maintainer-built draft
+    needs: [source, tests]
+    runs-on: windows-2022
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Download draft assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: gh release download $env:RELEASE_TAG --repo TK22-26/yoshis-story-recomp --dir build/release
+      - name: Check package, hashes, and executable identity
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: python tools/release.py verify --tag $env:RELEASE_TAG --require-tag --output build/release
+      # Tag pushes and ordinary manual verification leave the release a draft.
+      - name: Publish the authorized stable release
+        if: github.event_name == 'workflow_dispatch' && inputs.publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: python tools/release.py publish --tag $env:RELEASE_TAG --output build/release

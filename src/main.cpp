@@ -48,6 +48,7 @@
 #include "game_pause.h"
 #include "launcher.h"
 #include "version.h"
+#include "build_identity.h"
 
 // Pull in the generated section table from N64Recomp
 #include "recomp_overlays.inl"
@@ -1247,6 +1248,13 @@ static LONG WINAPI crash_handler(EXCEPTION_POINTERS* info) {
 #endif
 
 int main(int argc, char** argv) {
+    // Release verification must work without SDL initialization, a window,
+    // a data directory, or access to the player's ROM.
+    if (argc == 2 && strcmp(argv[1], "--build-info") == 0) {
+        printf("{\"schema\":1,\"version\":\"%s\",\"source\":\"%s\",\"dirty\":%s}\n",
+               app_version::string, build_identity::source, build_identity::dirty ? "true" : "false");
+        return 0;
+    }
 #ifdef SDL_MAIN_HANDLED
     SDL_SetMainReady();
 #endif

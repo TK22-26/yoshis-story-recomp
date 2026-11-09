@@ -1,0 +1,12 @@
+Microsoft Visual C++ Runtime
+
+Copyright Microsoft Corporation. All rights reserved.
+
+The unmodified x64 Microsoft.VC143.CRT runtime libraries are supplied beside
+the application from the maintainer's Visual Studio 2022 redistributable folder.
+They retain Microsoft's license terms. These are runtime dependencies, not
+Visual Studio build tools. The release inventory records each file's digest.
+
+Microsoft distribution references:
+https://learn.microsoft.com/en-us/visualstudio/releases/2022/redistribution
+https://learn.microsoft.com/en-us/cpp/windows/redistributing-visual-cpp-files

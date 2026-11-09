@@ -17,6 +17,11 @@ SDL2's notice comes from the pinned 2.32.10 development archive. Other notices
 come from the dependency revisions referenced by this project, except the
 nlohmann/json MIT notice (v3.11.3), whose copyright and terms cover that library.
 
+The Windows package includes the unmodified x64 Microsoft.VC143.CRT libraries
+from Visual Studio 2022's redistributable directory. These retain Microsoft's
+terms; see `licenses/Microsoft-Visual-Cpp.txt`. Their exact hashes are included
+in the release inventory.
+
 The compact menu layout follows TK22-26's Jet Force Gemini project. Fonts are
 loaded from the operating system at runtime. The egg icon is original project
 art produced by `tools/gen_icon.py`. No game artwork, audio, textures, ROMs,

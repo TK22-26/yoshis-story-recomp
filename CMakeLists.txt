@@ -190,6 +190,12 @@ add_custom_command(OUTPUT "${UI_IMAGES_HEADER}"
 target_sources(yoshis_story_recomp PRIVATE "${UI_IMAGES_HEADER}")
 configure_file(src/version.h.in generated/version.h @ONLY)
 target_include_directories(yoshis_story_recomp PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
+add_custom_target(yoshi_build_identity
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tools/write_build_identity.py"
+        --output "${CMAKE_CURRENT_BINARY_DIR}/generated/build_identity.h"
+    BYPRODUCTS "${CMAKE_CURRENT_BINARY_DIR}/generated/build_identity.h"
+    VERBATIM)
+add_dependencies(yoshis_story_recomp yoshi_build_identity)
 # Build the audio recompiler with the same generator/toolchain, then generate
 # only into the build directory. Neither the ROM nor generated audio is shipped.
 set(YOSHI_ROM "${CMAKE_CURRENT_SOURCE_DIR}/data/yoshis_story.z64" CACHE FILEPATH "User-supplied US ROM")
@@ -279,6 +285,22 @@ target_link_libraries(yoshis_story_recomp PRIVATE
 )
 
 if(WIN32)
+    # Ship the release CRT next to the executable, as in JFG's portable bundle.
+    find_path(YOSHI_VC_RUNTIME_DIR msvcp140.dll
+        HINTS "$ENV{VCToolsRedistDir}/x64/Microsoft.VC143.CRT")
+    if(NOT YOSHI_VC_RUNTIME_DIR)
+        message(FATAL_ERROR "Run from the VS x64 developer shell or set YOSHI_VC_RUNTIME_DIR to the x64 Microsoft.VC143.CRT redistributable directory.")
+    endif()
+    set(YOSHI_VC_RUNTIME_FILES concrt140.dll msvcp140.dll msvcp140_1.dll msvcp140_2.dll
+        msvcp140_atomic_wait.dll msvcp140_codecvt_ids.dll vccorlib140.dll
+        vcruntime140.dll vcruntime140_1.dll vcruntime140_threads.dll)
+    set(YOSHI_VC_RUNTIME_PATHS)
+    foreach(_dll IN LISTS YOSHI_VC_RUNTIME_FILES)
+        if(NOT EXISTS "${YOSHI_VC_RUNTIME_DIR}/${_dll}")
+            message(FATAL_ERROR "Missing redistributable library: ${YOSHI_VC_RUNTIME_DIR}/${_dll}")
+        endif()
+        list(APPEND YOSHI_VC_RUNTIME_PATHS "${YOSHI_VC_RUNTIME_DIR}/${_dll}")
+    endforeach()
     # RT64 dynamically loads DXC, including when its Vulkan backend is used.
     add_custom_command(TARGET yoshis_story_recomp POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_FILE:SDL2::SDL2>" "$<TARGET_FILE_DIR:yoshis_story_recomp>"
@@ -286,14 +308,17 @@ if(WIN32)
             "${RT64_PATH}/src/contrib/dxc/bin/x64/dxcompiler.dll"
             "${RT64_PATH}/src/contrib/dxc/bin/x64/dxil.dll"
             "$<TARGET_FILE_DIR:yoshis_story_recomp>"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different ${YOSHI_VC_RUNTIME_PATHS}
+            "$<TARGET_FILE_DIR:yoshis_story_recomp>"
         VERBATIM)
     install(TARGETS yoshis_story_recomp RUNTIME DESTINATION . COMPONENT Runtime)
     install(FILES "$<TARGET_FILE:SDL2::SDL2>"
         "${RT64_PATH}/src/contrib/dxc/bin/x64/dxcompiler.dll"
         "${RT64_PATH}/src/contrib/dxc/bin/x64/dxil.dll" DESTINATION . COMPONENT Runtime)
+    install(FILES ${YOSHI_VC_RUNTIME_PATHS} DESTINATION . COMPONENT Runtime)
     # Create an empty data folder. Never package the source/local data folder.
     install(DIRECTORY DESTINATION data COMPONENT Runtime)
-    install(FILES README.md THIRD_PARTY_NOTICES.md DESTINATION . COMPONENT Runtime)
+    install(FILES README.md THIRD_PARTY_NOTICES.md CHANGELOG.md "START HERE.txt" DESTINATION . COMPONENT Runtime)
     install(DIRECTORY licenses/ DESTINATION licenses COMPONENT Runtime FILES_MATCHING PATTERN "*.txt")
     set(CPACK_GENERATOR ZIP)
     set(CPACK_ARCHIVE_COMPONENT_INSTALL ON)
