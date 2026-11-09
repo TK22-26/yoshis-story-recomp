@@ -740,6 +740,7 @@ static ultramodern::renderer::WindowHandle create_window(void*) {
         SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
         win_w, win_h,
         SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_VULKAN |
+            (g_settings.borderlessWindow ? SDL_WINDOW_BORDERLESS : 0) |
             (g_settings.fullscreen ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0)
     );
     if (!g_sdl_window) {
@@ -765,10 +766,15 @@ static ultramodern::renderer::WindowHandle create_window(void*) {
 
 static void input_handle_event(const SDL_Event& e);
 static void input_sample();
-static std::atomic<int> g_fullscreen_request{-1};
+static std::atomic<int> g_window_mode_request{-1};
+
+void request_window_mode(WindowMode mode) {
+    g_window_mode_request.store(int(mode), std::memory_order_release);
+}
 
 void request_fullscreen(bool fullscreen) {
-    g_fullscreen_request.store(fullscreen ? 1 : 0, std::memory_order_release);
+    request_window_mode(fullscreen ? WindowMode::BorderlessFullscreen :
+        g_settings.borderlessWindow ? WindowMode::BorderlessWindow : WindowMode::Windowed);
 }
 
 static void update_gfx(void*) {
@@ -808,14 +814,21 @@ static void update_gfx(void*) {
             std::_Exit(0);
         }
     }
-    const int fullscreen = g_fullscreen_request.exchange(-1, std::memory_order_acq_rel);
-    if (fullscreen >= 0) {
+    const int modeRequest = g_window_mode_request.exchange(-1, std::memory_order_acq_rel);
+    if (modeRequest >= 0) {
+        const auto mode = WindowMode(modeRequest);
+        const bool fullscreen = mode == WindowMode::BorderlessFullscreen;
         if (SDL_SetWindowFullscreen(g_sdl_window, fullscreen ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0) != 0)
             fprintf(stderr, "[display] Fullscreen change failed: %s\n", SDL_GetError());
         g_settings.fullscreen = (SDL_GetWindowFlags(g_sdl_window) & SDL_WINDOW_FULLSCREEN) != 0;
-        if (!g_settings.fullscreen) platform::apply_window_chrome(g_sdl_window);
+        if (!g_settings.fullscreen) {
+            if (!fullscreen) g_settings.borderlessWindow = mode == WindowMode::BorderlessWindow;
+            SDL_SetWindowBordered(g_sdl_window, g_settings.borderlessWindow ? SDL_FALSE : SDL_TRUE);
+        }
+        platform::apply_window_chrome(g_sdl_window);
         settings_save(g_settings_path);
-        fprintf(stderr, "[display] Window mode: %s\n", g_settings.fullscreen ? "borderless" : "windowed");
+        fprintf(stderr, "[display] Window mode: %s\n", g_settings.fullscreen ? "borderless fullscreen" :
+            g_settings.borderlessWindow ? "borderless window" : "windowed");
     }
     overlay::process_actions();
     input_sample();

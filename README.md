@@ -44,10 +44,21 @@ Uses [N64Recomp](https://github.com/N64Recomp/N64Recomp),
 
 Built and exercised on Windows 11 x64 with Direct3D 12. Checked startup from a
 separate working directory, keyboard/controller input, EEPROM save creation,
-owned settings windows, pause/resume, restart, and borderless/windowed changes.
-The automated tests cover RDRAM aliases and the pause clock without a ROM.
-This is an initial Windows port, not a complete campaign playthrough. Linux and
-the Windows Vulkan backend have not been retested for this fork.
+owned settings windows, pause/resume, restart, and all three window modes.
+Fullscreen client/frame bounds match the physical monitor; exiting restores
+the previous window size and style. Automated tests cover RDRAM aliases,
+the pause clock, and texture boundary selection without a ROM.
+
+The storybook seam correction was also tested separately on upstream Linux
+source under Ubuntu 26.04 / WSL2 / Vulkan, after reproducing the seams in the
+official Linux v1.0.0 AppImage. It clamps single-tile mirrored CI4 panels at
+their loaded image bounds, preventing filtering into unused TMEM while
+preserving intentional texture repetition. This is a game-specific rendering
+correction, not a general change to N64 texture-addressing rules.
+
+This is an initial Windows port, not a complete campaign playthrough. The
+complete Windows fork on Linux and the Windows Vulkan backend have not been
+retested.
 
 ## Getting started on Windows
 
@@ -324,9 +335,10 @@ The desktop menu uses JFG's compact 24 dp bar and 26 dp dropdown rows with a
 dark green, cream, and soft green palette. Windows uses an installed Segoe UI
 font and per-monitor DPI awareness; no font assets are bundled. **Game >
 Pause game / Resume game** or the **Pause** key freezes/resumes guest execution,
-audio, and game timers while the menu stays usable. **Ctrl+M** toggles mute.
-**F1** hides or shows the menu bar in either window mode. Without an explicit
-F1 choice, the bar hides in borderless mode until settings or pause is opened.
+audio, and game timers while the menu stays usable. **Audio > Mute / Unmute**
+or **Ctrl+M** toggles mute. **Alt+F4** quits.
+**F1** hides or shows the menu bar in every window mode. Without an explicit
+F1 choice, the bar hides in borderless fullscreen until settings or pause is opened.
 
 ---
 
@@ -335,12 +347,18 @@ F1 choice, the bar hides in borderless mode until settings or pause is opened.
 A launcher window opens before the game with options for resolution
 (native 320×240, fit window, or 2×–8×), supersampling, MSAA, 2D
 upscaling, output filter, CRT scanline filter, overscan crop and
-fullscreen. Settings are saved to `data/settings.ini`.
+window mode. Settings are saved to `data/settings.ini`.
+
+**Video** offers three window modes: **Windowed**, **Borderless window**
+(the current window size without its title bar), and **Borderless fullscreen**
+(the entire monitor, including the taskbar area). Fullscreen removes the
+windowed DWM border and rounded corners on Windows.
 
 Uncheck "Show this window at startup" to skip it. Use `YOSHI_LAUNCHER=1`
 to force it for one run, `YOSHI_LAUNCHER=0` to skip it.
 
-In-game: **F11** or **Alt+Enter** toggles fullscreen; **F10** cycles the
+In-game: **F11** or **Alt+Enter** toggles fullscreen and restores the previous
+windowed or borderless-window style on exit. **F10** cycles the
 CRT filter (off → 0.25 → 0.5 → 1.0). Both are remembered.
 
 Environment variable overrides (one run only, not saved):

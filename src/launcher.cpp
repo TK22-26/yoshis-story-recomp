@@ -105,6 +105,7 @@ void settings_load(const std::filesystem::path& path) {
         else if (key == "crt") s.crt = std::clamp(float(v), 0.0f, 1.0f);
         else if (key == "crop") s.crop = std::clamp(int(v), 0, 16);
         else if (key == "fullscreen") s.fullscreen = v != 0.0;
+        else if (key == "borderless_window") s.borderlessWindow = v != 0.0;
         else if (key == "volume") s.volume = std::clamp(float(v), 0.0f, 1.0f);
         else if (key == "muted") s.muted = v != 0.0;
         else if (key == "show_launcher") s.showLauncher = v != 0.0;
@@ -156,6 +157,7 @@ void settings_save(const std::filesystem::path& path) {
         << "crt = " << s.crt << "\n"
         << "crop = " << s.crop << "\n"
         << "fullscreen = " << (s.fullscreen ? 1 : 0) << "\n"
+        << "borderless_window = " << (s.borderlessWindow ? 1 : 0) << "\n"
         << "volume = " << s.volume << "\n"
         << "muted = " << (s.muted ? 1 : 0) << "\n"
         << "show_launcher = " << (s.showLauncher ? 1 : 0) << "\n"
@@ -314,8 +316,8 @@ constexpr const char* kTipCrop =
     "Hides this many pixels along each edge, like a TV's overscan. The game leaves "
     "a stale 1-pixel border, so 2 is recommended; 0 shows everything.";
 constexpr const char* kTipFullscreen =
-    "Start in borderless fullscreen. In game, F11 or Alt+Enter switches between "
-    "fullscreen and a window.";
+    "Borderless window keeps the window size without its title bar. Borderless "
+    "fullscreen covers the monitor. F11 or Alt+Enter toggles fullscreen.";
 constexpr const char* kTipLauncher =
     "Untick to go straight into the game next time. Run with YOSHI_LAUNCHER=1 "
     "to bring this window back.";
@@ -483,8 +485,12 @@ bool run_launcher(const std::filesystem::path& settingsPath) {
         ImGui::SliderInt("##crop", &s.crop, 0, 8);
         tip(kTipCrop);
 
-        label("Fullscreen", kTipFullscreen);
-        ImGui::Checkbox("##fullscreen", &s.fullscreen);
+        label("Window mode", kTipFullscreen);
+        int mode = int(s.window_mode());
+        if (ImGui::Combo("##windowmode", &mode, "Windowed\0Borderless window\0Borderless fullscreen\0")) {
+            s.fullscreen = mode == int(WindowMode::BorderlessFullscreen);
+            if (!s.fullscreen) s.borderlessWindow = mode == int(WindowMode::BorderlessWindow);
+        }
         tip(kTipFullscreen);
 
         ImGui::PopItemWidth();

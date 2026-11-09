@@ -65,10 +65,25 @@ void apply_window_chrome(SDL_Window* window) {
     // buttons, snap layouts and resizing. Unsupported attributes are harmless.
     const BOOL dark = TRUE;
     DwmSetWindowAttribute(handle, 20, &dark, sizeof(dark));
-    const DWORD round = 2; // DWMWCP_ROUND (Windows 11)
+    const Uint32 flags = SDL_GetWindowFlags(window);
+    const bool fullscreen = (flags & SDL_WINDOW_FULLSCREEN) != 0;
+    const bool frameless = fullscreen || (flags & SDL_WINDOW_BORDERLESS) != 0;
+    const DWORD round = frameless ? 1 : 2; // DWMWCP_DONOTROUND / ROUND
     DwmSetWindowAttribute(handle, 33, &round, sizeof(round));
-    const DWORD mica = 2; // DWMSBT_MAINWINDOW (Windows 11 22H2+)
+    const DWORD border = frameless ? 0xFFFFFFFEu : 0xFFFFFFFFu; // NONE / DEFAULT
+    DwmSetWindowAttribute(handle, 34, &border, sizeof(border));
+    const DWORD mica = frameless ? 1 : 2; // DWMSBT_NONE / MAINWINDOW
     DwmSetWindowAttribute(handle, 38, &mica, sizeof(mica));
+    if (fullscreen) {
+        // Match JFG's physical monitor bounds (not the desktop work area).
+        // Clear the windowed DWM treatment before completing the frame change.
+        MONITORINFO monitor{sizeof(monitor)};
+        if (GetMonitorInfoW(MonitorFromWindow(handle, MONITOR_DEFAULTTONEAREST), &monitor))
+            SetWindowPos(handle, nullptr, monitor.rcMonitor.left, monitor.rcMonitor.top,
+                monitor.rcMonitor.right - monitor.rcMonitor.left,
+                monitor.rcMonitor.bottom - monitor.rcMonitor.top,
+                SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+    }
 #else
     (void)window;
 #endif

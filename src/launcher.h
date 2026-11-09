@@ -30,6 +30,8 @@ struct InputBindings {
 // Populate b with the default bindings (WASD + controller Xbox layout).
 void input_bindings_reset_defaults(InputBindings& b);
 
+enum class WindowMode { Windowed, BorderlessWindow, BorderlessFullscreen };
+
 // Display settings, saved to data/settings.ini. The launcher window edits
 // them before the game starts; YOSHI_* environment variables override them
 // for one run without being saved.
@@ -44,11 +46,17 @@ struct YoshiSettings {
     float crt = 0.0f;           // CRT filter strength 0..1
     int crop = 2;               // framebuffer pixels hidden per edge
     bool fullscreen = false;
+    bool borderlessWindow = false; // Window style to restore after leaving fullscreen.
     float volume = 1.0f;    // master volume 0..1, applied per-sample before SDL_QueueAudio
     bool muted = false;     // silences output without losing the volume level
     bool showLauncher = true;
     int launcherW = 0, launcherH = 0;   // launcher window size last time (0 = default)
     InputBindings bindings;             // keyboard and controller button mappings
+
+    WindowMode window_mode() const {
+        return fullscreen ? WindowMode::BorderlessFullscreen :
+            borderlessWindow ? WindowMode::BorderlessWindow : WindowMode::Windowed;
+    }
 };
 
 extern YoshiSettings g_settings;
@@ -72,6 +80,7 @@ void settings_apply_env();
 extern SDL_Window* g_sdl_window;
 // Queue window changes for SDL's main thread; safe from the renderer UI.
 void request_fullscreen(bool fullscreen);
+void request_window_mode(WindowMode mode);
 
 // Mute / unmute the SDL audio device (hardware pause). Separate from the
 // software volume scale; used if needed for a true hardware silence.

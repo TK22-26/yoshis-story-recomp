@@ -406,8 +406,10 @@ void draw_display_tab() {
         ImGui::SliderFloat("##crt", &s.crt, 0, 1, s.crt <= 0 ? "Off" : "%.2f");
         row("Overscan crop", "Hides pixels at each edge, like a TV. Two pixels is the default.");
         ImGui::SliderInt("##crop", &s.crop, 0, 8, "%d px");
-        row("Window mode", "F11 or Alt+Enter also switches between windowed and borderless fullscreen.");
-        if (ImGui::Checkbox("Borderless fullscreen", &s.fullscreen)) request_fullscreen(s.fullscreen);
+        row("Window mode", "Borderless window keeps its size. F11 or Alt+Enter toggles fullscreen.");
+        int mode = int(s.window_mode());
+        if (ImGui::Combo("##windowmode", &mode, "Windowed\0Borderless window\0Borderless fullscreen\0"))
+            request_window_mode(WindowMode(mode));
         ImGui::EndTable();
     }
     if (g_pending_msaa >= 0 && g_pending_msaa != s.msaa)
@@ -489,10 +491,46 @@ void open_page(Page page) {
 bool begin_desktop_menu(const char* label) {
     ImGui::SetNextWindowSizeConstraints(ImVec2(252 * g_menu_scale, 0), ImVec2(252 * g_menu_scale, FLT_MAX));
     const bool open = ImGui::BeginMenu(label);
-    if (open) ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing,
-        ImVec2(20 * g_menu_scale, 26 * g_menu_scale - ImGui::GetFontSize()));
+    if (open) ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0, 0));
     return open;
 }
+
+bool desktop_menu_item(const char* label, const char* shortcut = nullptr, bool checked = false) {
+    // Use explicit rows: MenuItem's half-spacing expansion makes the visible
+    // inset depend on font metrics and can make an auto-sized popup scroll.
+    const float scale = g_menu_scale;
+    ImGui::PushID(label);
+    const bool pressed = ImGui::Selectable("##item", false,
+        ImGuiSelectableFlags_NoPadWithHalfSpacing | ImGuiSelectableFlags_SelectOnRelease,
+        ImVec2(0, 26 * scale));
+    const ImVec2 start = ImGui::GetItemRectMin();
+    const ImVec2 end = ImGui::GetItemRectMax();
+    const float textY = start.y + (26 * scale - ImGui::GetFontSize()) / 2;
+    auto* draw = ImGui::GetWindowDrawList();
+    draw->AddText(ImVec2(start.x + 12 * scale, textY), ImGui::GetColorU32(ImGuiCol_Text), label);
+    float right = end.x - 12 * scale;
+    if (checked) {
+        ImGui::RenderCheckMark(draw, ImVec2(right - 10 * scale, start.y + 8 * scale),
+            ImGui::GetColorU32(ImGuiCol_Text), 10 * scale);
+        right -= 20 * scale;
+    }
+    if (shortcut) draw->AddText(ImVec2(right - ImGui::CalcTextSize(shortcut).x, textY),
+        ImGui::GetColorU32(ImGuiCol_TextDisabled), shortcut);
+    ImGui::PopID();
+    return pressed;
+}
+
+void desktop_menu_separator() {
+    const float scale = g_menu_scale;
+    const ImVec2 pos = ImGui::GetCursorScreenPos();
+    const float width = ImGui::GetContentRegionAvail().x;
+    ImGui::GetWindowDrawList()->AddRectFilled(
+        ImVec2(pos.x + 4 * scale, pos.y + 4 * scale),
+        ImVec2(pos.x + width - 4 * scale, pos.y + 5 * scale),
+        ImGui::GetColorU32(ImGuiCol_Separator));
+    ImGui::Dummy(ImVec2(width, 9 * scale));
+}
+
 void end_desktop_menu() {
     ImGui::PopStyleVar();
     ImGui::EndMenu();
@@ -512,7 +550,8 @@ void draw_menu_bar() {
     }
     const float scale = g_menu_scale;
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(10 * scale, (24 * scale - ImGui::GetFontSize()) / 2));
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(15 * scale, 6 * scale));
+    // JFG uses 3 dp of inset plus a 1 dp border around each dropdown.
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(4 * scale, 4 * scale));
     // BeginMenu adds spacing on both sides of a heading.
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(10 * scale, 24 * scale - ImGui::GetFontSize()));
     ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0);
@@ -523,38 +562,43 @@ void draw_menu_bar() {
         g_menu_height.store(ImGui::GetWindowHeight());
         ImGui::SetCursorPosX(4 * scale);
         if (begin_desktop_menu("Game")) {
-            if (ImGui::MenuItem(game_pause::is_paused() ? "Resume game" : "Pause game", "Pause"))
+            if (desktop_menu_item(game_pause::is_paused() ? "Resume game" : "Pause game", "Pause"))
                 g_menu_action.store(5);
-            if (ImGui::MenuItem("Restart game")) g_menu_action.store(1);
-            ImGui::Separator();
-            if (ImGui::MenuItem("Quit")) g_menu_action.store(2);
+            if (desktop_menu_item("Restart game")) g_menu_action.store(1);
+            desktop_menu_separator();
+            if (desktop_menu_item("Quit", "Alt+F4")) g_menu_action.store(2);
             end_desktop_menu();
         }
         if (begin_desktop_menu("Controllers")) {
-            if (ImGui::MenuItem("Controller mapping...")) open_page(Page::Controls);
+            if (desktop_menu_item("Controller mapping...")) open_page(Page::Controls);
             end_desktop_menu();
         }
         if (begin_desktop_menu("Video")) {
-            if (ImGui::MenuItem("Video settings...")) open_page(Page::Display);
-            if (ImGui::MenuItem("Borderless fullscreen", "F11", g_settings.fullscreen))
+            if (desktop_menu_item("Video settings...")) open_page(Page::Display);
+            desktop_menu_separator();
+            if (desktop_menu_item("Windowed", nullptr, g_settings.window_mode() == WindowMode::Windowed))
+                request_window_mode(WindowMode::Windowed);
+            if (desktop_menu_item("Borderless window", nullptr, g_settings.window_mode() == WindowMode::BorderlessWindow))
+                request_window_mode(WindowMode::BorderlessWindow);
+            if (desktop_menu_item("Borderless fullscreen", "F11", g_settings.fullscreen))
                 request_fullscreen(!g_settings.fullscreen);
             end_desktop_menu();
         }
         if (begin_desktop_menu("Audio")) {
-            if (ImGui::MenuItem("Audio settings...")) open_page(Page::Audio);
-            if (ImGui::MenuItem("Mute", "Ctrl+M", audio_get_muted())) {
+            if (desktop_menu_item("Audio settings...")) open_page(Page::Audio);
+            if (desktop_menu_item(audio_get_muted() ? "Unmute" : "Mute", "Ctrl+M")) {
                 audio_set_muted(!audio_get_muted());
                 settings_save(g_settings_path);
             }
             end_desktop_menu();
         }
         if (begin_desktop_menu("Tools")) {
-            if (ImGui::MenuItem("Open data folder")) g_menu_action.store(3);
-            if (ImGui::MenuItem("Open save folder")) g_menu_action.store(4);
+            if (desktop_menu_item("Open data folder")) g_menu_action.store(3);
+            if (desktop_menu_item("Open save folder")) g_menu_action.store(4);
             end_desktop_menu();
         }
         if (begin_desktop_menu("Help")) {
-            if (ImGui::MenuItem("About Yoshi's Story...")) open_page(Page::About);
+            if (desktop_menu_item("About Yoshi's Story...")) open_page(Page::About);
             end_desktop_menu();
         }
         const char* hint = game_pause::is_paused() ? "Paused    |    F1  Hide menu" : "F1  Hide menu";
