@@ -1,5 +1,5 @@
 // Desktop menu and native settings windows owned by the game window.
-// F1 / Esc / Controller Back opens settings; Pause toggles game execution.
+// F1 shows/hides the menu; Esc / Controller Back opens settings; Pause pauses.
 
 #pragma once
 
@@ -20,7 +20,7 @@ void detach(RT64::Application& app);
 void draw(RT64::Application& app);
 
 // Returns true if the event was consumed and should not reach the game.
-// Toggles visibility on ESC / F1 / Controller Back. Routes other events to
+// F1 toggles the menu; Esc / Controller Back toggles settings. Routes events to
 // the Inspector's ImGui backend when visible.
 bool handle_event(SDL_Event* event);
 // Dispatch restart, exit and folder-opening requests on SDL's main thread.

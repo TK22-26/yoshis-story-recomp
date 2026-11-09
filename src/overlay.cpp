@@ -55,6 +55,7 @@ int g_active = int(Page::Display); // Main-thread dialog state
 int g_pending_msaa = -1;
 std::atomic<bool> g_focus_content{false};
 std::atomic<bool> g_menu_open{false};
+std::atomic<int> g_menu_visibility{-1}; // -1: automatic; F1 explicitly shows/hides
 std::atomic<float> g_menu_height{24.0f};
 std::atomic<int> g_page_request{-1};
 std::atomic<bool> g_dialog_close{false};
@@ -433,7 +434,8 @@ void draw_about_tab() {
 
 
     heading("In-game shortcuts");
-    ImGui::BulletText("Esc / F1 / Controller Back - open or close settings");
+    ImGui::BulletText("F1 - hide or show the menu bar");
+    ImGui::BulletText("Esc / Controller Back - open or close settings");
     ImGui::BulletText("F10 - cycle CRT filter (off / 0.25 / 0.5 / 1.0)");
     ImGui::BulletText("F11 or Alt+Enter - toggle fullscreen");
     ImGui::BulletText("Pause - pause or resume the game");
@@ -496,14 +498,28 @@ void end_desktop_menu() {
     ImGui::EndMenu();
 }
 
+bool menu_bar_visible() {
+    const int visibility = g_menu_visibility.load();
+    return visibility >= 0 ? visibility != 0 :
+        (!g_settings.fullscreen || g_visible.load() || g_menu_open.load() || game_pause::is_paused());
+}
+
 void draw_menu_bar() {
-    if (g_settings.fullscreen && !g_visible.load() && !g_menu_open.load() && !game_pause::is_paused()) return;
+    if (!menu_bar_visible()) {
+        if (ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel))
+            ImGui::ClosePopupToLevel(0, true);
+        return;
+    }
     const float scale = g_menu_scale;
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(10 * scale, (24 * scale - ImGui::GetFontSize()) / 2));
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(15 * scale, 6 * scale));
     // BeginMenu adds spacing on both sides of a heading.
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(10 * scale, 24 * scale - ImGui::GetFontSize()));
-    if (ImGui::BeginMainMenuBar()) {
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0);
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 0);
+    const bool draw = ImGui::BeginMainMenuBar();
+    ImGui::PopStyleVar(2);
+    if (draw) {
         g_menu_height.store(ImGui::GetWindowHeight());
         ImGui::SetCursorPosX(4 * scale);
         if (begin_desktop_menu("Game")) {
@@ -541,7 +557,7 @@ void draw_menu_bar() {
             if (ImGui::MenuItem("About Yoshi's Story...")) open_page(Page::About);
             end_desktop_menu();
         }
-        const char* hint = game_pause::is_paused() ? "Paused    |    F1  Settings" : "F1  Settings";
+        const char* hint = game_pause::is_paused() ? "Paused    |    F1  Hide menu" : "F1  Hide menu";
         const float hintX = ImGui::GetWindowWidth() - ImGui::CalcTextSize(hint).x - 20;
         if (hintX > ImGui::GetCursorPosX() + 20) {
             ImGui::SetCursorPosX(hintX);
@@ -810,6 +826,11 @@ bool handle_event(SDL_Event* event) {
         return true;
     }
 
+    if (event->type == SDL_KEYDOWN && !event->key.repeat && event->key.keysym.scancode == SDL_SCANCODE_F1) {
+        g_menu_visibility.store(menu_bar_visible() ? 0 : 1);
+        return true;
+    }
+
     // Capture mode (DKR-R pattern): intercept the next key/button press to
     // apply as a new binding. Takes priority over all other event handling so
     // that Esc cancels capture rather than closing the overlay.
@@ -844,14 +865,14 @@ bool handle_event(SDL_Event* event) {
         return true;
     }
 
-    // ESC / F1 / Controller Back toggle visibility and consume the event.
+    // Esc / Controller Back toggle settings and consume the event.
     if (event->type == SDL_KEYDOWN && !event->key.repeat) {
         const SDL_Scancode code = event->key.keysym.scancode;
         if (code == SDL_SCANCODE_PAUSE && !g_visible.load()) {
             g_menu_action.store(5);
             return true;
         }
-        if (code == SDL_SCANCODE_ESCAPE || code == SDL_SCANCODE_F1) {
+        if (code == SDL_SCANCODE_ESCAPE) {
             toggle();
             return true;
         }
@@ -883,9 +904,9 @@ bool handle_event(SDL_Event* event) {
     const bool capture = g_visible.load() || g_menu_open.load();
     if (capture) feed_controller_to_imgui(*event);
     if (event->type == SDL_MOUSEBUTTONDOWN || event->type == SDL_MOUSEBUTTONUP)
-        return capture || (!g_settings.fullscreen && event->button.y < g_menu_height.load());
+        return capture || (menu_bar_visible() && event->button.y < g_menu_height.load());
     if (event->type == SDL_MOUSEMOTION)
-        return capture || (!g_settings.fullscreen && event->motion.y < g_menu_height.load());
+        return capture || (menu_bar_visible() && event->motion.y < g_menu_height.load());
     if (event->type == SDL_WINDOWEVENT) return dialogEvent;
     if (event->type == SDL_QUIT) return false;
     return capture;

@@ -316,7 +316,7 @@ keyboard simultaneously. Rumble is forwarded to the controller.
 | C buttons | I J K L | Right stick |
 | D-pad | T F G H | D-pad |
 
-Use **Controllers > Controller mapping** to remap inputs, or **F1** / **Esc** /
+Use **Controllers > Controller mapping** to remap inputs, or **Esc** /
 controller **Back** to open settings. Settings are native windows owned by the
 game window. They pause the game until closed, preserving a manual pause.
 
@@ -325,7 +325,8 @@ dark green, cream, and soft green palette. Windows uses an installed Segoe UI
 font and per-monitor DPI awareness; no font assets are bundled. **Game >
 Pause game / Resume game** or the **Pause** key freezes/resumes guest execution,
 audio, and game timers while the menu stays usable. **Ctrl+M** toggles mute.
-The top menu hides in borderless mode until settings or pause is opened.
+**F1** hides or shows the menu bar in either window mode. Without an explicit
+F1 choice, the bar hides in borderless mode until settings or pause is opened.
 
 ---
 
