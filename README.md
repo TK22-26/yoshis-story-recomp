@@ -3,12 +3,13 @@
 [![Windows checks](https://github.com/TK22-26/yoshis-story-recomp/actions/workflows/windows.yml/badge.svg?branch=main)](https://github.com/TK22-26/yoshis-story-recomp/actions/workflows/windows.yml)
 
 A native **Windows x64** recompilation of Yoshi's Story for Nintendo 64.
-**Version 1.0.0 supports the original USA ROM.** Extract the Windows package,
-add your own ROM, and play. No developer tools or first-run compilation are needed.
+**Version 1.0.1 is being prepared for the original USA ROM.** The 1.0.0 download
+was withdrawn because first launch lacked ROM selection. The replacement opens
+a native ROM picker and starts the game after selection. No developer tools or first-run compilation are needed.
 
 [Windows downloads](https://github.com/TK22-26/yoshis-story-recomp/releases) |
 [Install and play](#getting-started-on-windows) | [Controls](#controls) |
-[Changelog](CHANGELOG.md) | [Release verification and limits](https://github.com/TK22-26/yoshis-story-recomp/blob/main/docs/releases/1.0.0.md)
+[Changelog](CHANGELOG.md) | [Release verification and limits](https://github.com/TK22-26/yoshis-story-recomp/blob/main/docs/releases/1.0.1.md)
 
 This is TK22-26's Windows fork of
 [damobeanrod's Linux port](https://github.com/damobeanrod/yoshis-story-recomp),
@@ -65,16 +66,22 @@ retested.
 
 ## Getting started on Windows
 
-1. Download `Yoshis-Story-1.0.0-windows-x64.zip` from the
+1. Once published, download `Yoshis-Story-1.0.1-windows-x64.zip` from the
    [releases page](https://github.com/TK22-26/yoshis-story-recomp/releases).
 2. Extract the entire ZIP into a writable folder. Keep all DLLs beside
    `yoshis_story_recomp.exe`.
-3. Put your own USA ROM at `data/yoshis_story.z64`.
-4. Open `yoshis_story_recomp.exe`, choose your settings, and start the game.
+3. Open `yoshis_story_recomp.exe`. Select your own USA ROM in the Windows file
+   picker (`.z64`, `.n64`, or `.v64`). Its name and location do not need to change.
+4. The app validates the ROM, stores a private local copy in `data/`, and starts
+   the game. Later launches use that copy automatically. Cancel exits cleanly.
+
+Use **Game > Select ROM...** to select a ROM again. Unsupported or modified ROMs
+are rejected without changing the selected file. Display settings are available
+from **Video > Video settings...**; there is no startup settings launcher.
 
 The package includes `START HERE.txt` and the Microsoft Visual C++ runtime.
-Git, Python, Visual Studio, and WSL are not needed to play. The console displays
-runtime diagnostics. Only the USA ROM is supported.
+Git, Python, Visual Studio, and WSL are not needed to play. The app opens without a console; diagnostics are written
+to `data/runtime.log` (replaced on each launch). Only the USA ROM is supported.
 
 ```text
 yoshis_story_recomp.exe
@@ -83,7 +90,7 @@ dxcompiler.dll
 dxil.dll
 msvcp140*.dll, vcruntime140*.dll, other runtime DLLs
 data/
-  yoshis_story.z64       <- supplied locally by you
+  yoshis_story.z64       <- local copy imported from your selected ROM
   saves/                <- created by the game
 ```
 
@@ -97,7 +104,7 @@ and copy your existing data folder across to retain the ROM, saves, and settings
 The release's empty data folder contains no personal files.
 
 Each release has a matching `.sha256` file and `.inventory.json`. To check your
-ZIP in PowerShell, run `Get-FileHash .\Yoshis-Story-1.0.0-windows-x64.zip -Algorithm SHA256`
+ZIP in PowerShell, run `Get-FileHash .\Yoshis-Story-1.0.1-windows-x64.zip -Algorithm SHA256`
 and compare it with the checksum file. Maintainer preparation and publication
 are described in [the release guide](https://github.com/TK22-26/yoshis-story-recomp/blob/main/docs/releases/maintenance.md).
 
@@ -385,7 +392,7 @@ F1 choice, the bar hides in borderless fullscreen until settings or pause is ope
 
 ## Display settings
 
-A launcher window opens before the game with options for resolution
+Open **Video > Video settings...** in the game for resolution
 (native 320×240, fit window, or 2×–8×), supersampling, MSAA, 2D
 upscaling, output filter, CRT scanline filter, overscan crop and
 window mode. Settings are saved to `data/settings.ini`.
@@ -394,9 +401,6 @@ window mode. Settings are saved to `data/settings.ini`.
 (the current window size without its title bar), and **Borderless fullscreen**
 (the entire monitor, including the taskbar area). Fullscreen removes the
 windowed DWM border and rounded corners on Windows.
-
-Uncheck "Show this window at startup" to skip it. Use `YOSHI_LAUNCHER=1`
-to force it for one run, `YOSHI_LAUNCHER=0` to skip it.
 
 In-game: **F11** or **Alt+Enter** toggles fullscreen and restores the previous
 windowed or borderless-window style on exit. **F10** cycles the
@@ -465,7 +469,7 @@ to generate `recomp_funcs/`.
 The original port was directed by **damobeanrod** (concept, testing, and engineering
 decisions) and implemented almost entirely by
 **[Claude](https://claude.ai)** (Anthropic's AI assistant), which wrote the
-C++ runtime glue, launcher, in-game overlay, audio, input, RT64 patches,
+C++ runtime glue, ROM picker, settings windows, audio, input, RT64 patches,
 Python tooling, and CMake build system through an extended interactive
 session.
 

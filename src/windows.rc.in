@@ -1,0 +1,23 @@
+1 ICON "@CMAKE_CURRENT_BINARY_DIR@/generated/yoshi.ico"
+1 VERSIONINFO
+ FILEVERSION @PROJECT_VERSION_MAJOR@,@PROJECT_VERSION_MINOR@,@PROJECT_VERSION_PATCH@,0
+ PRODUCTVERSION @PROJECT_VERSION_MAJOR@,@PROJECT_VERSION_MINOR@,@PROJECT_VERSION_PATCH@,0
+ FILEOS 0x00040004
+ FILETYPE 0x1
+BEGIN
+ BLOCK "StringFileInfo"
+ BEGIN
+  BLOCK "040904B0"
+  BEGIN
+   VALUE "FileDescription", "Yoshi's Story Recomp"
+   VALUE "ProductName", "Yoshi's Story Recomp"
+   VALUE "FileVersion", "@PROJECT_VERSION@"
+   VALUE "ProductVersion", "@PROJECT_VERSION@"
+   VALUE "OriginalFilename", "yoshis_story_recomp.exe"
+  END
+ END
+ BLOCK "VarFileInfo"
+ BEGIN
+  VALUE "Translation", 0x0409, 1200
+ END
+END

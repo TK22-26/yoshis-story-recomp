@@ -11,9 +11,8 @@ void input_bindings_reset_defaults(InputBindings& b);
 
 enum class WindowMode { Windowed, BorderlessWindow, BorderlessFullscreen };
 
-// Display settings, saved to data/settings.ini. The launcher window edits
-// them before the game starts; YOSHI_* environment variables override them
-// for one run without being saved.
+// Settings saved to data/settings.ini by the in-game settings windows.
+// YOSHI_* environment variables override them for one run without being saved.
 struct YoshiSettings {
     enum Resolution { Native = 0, Window = 1, Manual = 2 };
     int resolution = Window;    // Native 320x240, fit the window, or Manual
@@ -28,8 +27,6 @@ struct YoshiSettings {
     bool borderlessWindow = false; // Window style to restore after leaving fullscreen.
     float volume = 1.0f;    // master volume 0..1, applied per-sample before SDL_QueueAudio
     bool muted = false;     // silences output without losing the volume level
-    bool showLauncher = true;
-    int launcherW = 0, launcherH = 0;   // launcher window size last time (0 = default)
     InputBindings bindings;             // keyboard, controller button and signed axis mappings
     std::string controller;             // stable device key; empty = automatic
 
@@ -82,6 +79,3 @@ input::ControllerState input_current_controller_state();
 SDL_JoystickID input_current_controller_id();
 const std::vector<input::ControllerDevice>& input_controllers();
 void input_select_controller(const std::string& key);
-
-// Show the settings window. Saves on Start. Returns false if the user quit.
-bool run_launcher(const std::filesystem::path& settingsPath);

@@ -47,6 +47,8 @@
 #include "overlay.h"
 #include "game_pause.h"
 #include "launcher.h"
+#include "rom_setup.h"
+#include "rom_file.h"
 #include "version.h"
 #include "build_identity.h"
 
@@ -365,7 +367,7 @@ static std::atomic<bool> g_dl_dump_request{false};
 static std::atomic<bool> g_crt_changed{false};
 std::filesystem::path g_settings_path;
 
-// Apply g_settings (data/settings.ini, the launcher, YOSHI_* env overrides)
+// Apply g_settings (data/settings.ini and YOSHI_* environment overrides)
 // to RT64's user configuration. Runs after setup(), which loads RT64's own
 // rt64.json and would overwrite anything set earlier. Also called from the
 // in-game overlay when the user changes a value.
@@ -577,8 +579,8 @@ public:
         app->enhancementConfig.presentation.crtStrength = g_settings.crt;
         app->updateEnhancementConfig();
         apply_display_settings(app.get(), true);
-        // The launcher may have consumed SDL window ID 1. Supply the actual
-        // game window instead of relying on RT64's first-window fallback.
+        // Supply the actual game window instead of relying on RT64's
+        // first-window fallback.
         app->appWindow->sdlWindow = g_sdl_window;
         chosen_api = app->chosenGraphicsAPI == RT64::UserConfiguration::GraphicsAPI::D3D12
             ? ultramodern::renderer::GraphicsApi::D3D12
@@ -1338,11 +1340,6 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    // Open audio at the default N64 audio frequency.
-    // The game will call audio_set_frequency() with the real rate shortly after boot;
-    // having the device open early avoids a gap on the first queue_samples call.
-    open_audio_device(g_audio_freq);
-
     // Register the section/overlay table from recomp_overlays.inl
     recomp::overlays::register_overlays(
         { section_table, ARRLEN(section_table), num_sections },
@@ -1351,7 +1348,7 @@ int main(int argc, char** argv) {
 
     // Register the game
     recomp::register_game(recomp::GameEntry{
-        .rom_hash          = 0xf1d8a6737dda5b82ULL,
+        .rom_hash          = rom_file::hash,
         .internal_name     = "YOSHI'S STORY",
         .display_name      = "Yoshi's Story",
         .game_id           = u8"yoshis_story",
@@ -1386,39 +1383,41 @@ int main(int argc, char** argv) {
         data_path = dir;
     } else if (std::filesystem::is_directory(exe_dir / "data")) {
         data_path = exe_dir / "data";
-    } else {
+    } else if (std::filesystem::is_directory(exe_dir / ".." / "data")) {
         data_path = exe_dir / ".." / "data";
+    } else {
+        data_path = exe_dir / "data";
     }
     auto config_path = std::filesystem::weakly_canonical(data_path);
     {
         std::error_code ec;
         std::filesystem::create_directories(config_path, ec);
     }
-    fprintf(stderr, "[RECOMP] config_path = %s\n", config_path.string().c_str()); fflush(stderr);
+    platform::start_log(config_path);
+    const auto config_name = config_path.u8string();
+    const auto rom_name = (config_path / "yoshis_story.z64").u8string();
+    fprintf(stderr, "[RECOMP] config_path = %s\n", reinterpret_cast<const char*>(config_name.c_str())); fflush(stderr);
     fprintf(stderr, "[RECOMP] ROM path = %s (exists=%d)\n",
-        (config_path / "yoshis_story.z64").string().c_str(),
+        reinterpret_cast<const char*>(rom_name.c_str()),
         (int)std::filesystem::exists(config_path / "yoshis_story.z64")); fflush(stderr);
     recomp::register_config_path(config_path);
 
-    // Display settings: data/settings.ini, edited in the launcher window
-    // (skipped when "show at startup" is off; YOSHI_LAUNCHER=1 forces it,
-    // YOSHI_LAUNCHER=0 skips it), then YOSHI_* environment overrides.
+    // Native ROM selection replaces the old startup settings launcher.
+    // A validated local copy lets future launches start directly.
+    if (!ensure_rom(config_path)) {
+        SDL_Quit();
+        return 0;
+    }
+    // Display and input settings are edited from the in-game menu.
     g_settings_path = config_path / "settings.ini";
     settings_load(g_settings_path);
     // Seed the audio atomics from the loaded settings so volume is correct
     // before the first sample arrives.
     g_audio_volume.store(std::clamp(g_settings.volume, 0.0f, 1.0f), std::memory_order_release);
     g_audio_muted.store(g_settings.muted, std::memory_order_release);
-    {
-        const char* launcher = getenv("YOSHI_LAUNCHER");
-        const bool show = launcher ? launcher[0] != '0' : g_settings.showLauncher;
-        if (show && !run_launcher(g_settings_path)) {
-            fprintf(stderr, "[RECOMP] quit from the launcher\n");
-            return 0;
-        }
-    }
     settings_apply_env();
-    // The launcher consumed the startup controller-added events.
+    open_audio_device(g_audio_freq);
+    // Enumerate devices after the native picker closes.
     input_open_controller();
 
     recomp::Configuration cfg{

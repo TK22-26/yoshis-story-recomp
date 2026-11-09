@@ -1,6 +1,7 @@
 #pragma once
 
 #include <filesystem>
+#include <string>
 struct SDL_Window;
 
 namespace platform {
@@ -12,4 +13,6 @@ float window_scale(SDL_Window* window);
 void set_dialog_owner(SDL_Window* dialog, SDL_Window* parent);
 void enable_window(SDL_Window* window, bool enabled);
 bool open_folder(const std::filesystem::path& path);
+bool select_rom_file(SDL_Window* owner, std::filesystem::path& selected, std::string& error);
+void start_log(const std::filesystem::path& directory);
 }

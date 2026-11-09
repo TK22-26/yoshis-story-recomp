@@ -1,8 +1,15 @@
-Yoshi's Story Recomp 1.0.0 - Windows x64
+Yoshi's Story Recomp 1.0.1 - Windows x64
 
 1. Extract the entire ZIP into a writable folder.
-2. Put your own USA Yoshi's Story ROM at data/yoshis_story.z64.
-3. Open yoshis_story_recomp.exe and choose Start in the settings launcher.
+2. Open yoshis_story_recomp.exe.
+3. Choose your own USA Yoshi's Story ROM in the file picker (.z64, .n64, or .v64).
+   You do not need to rename or move it. Cancel exits the app.
+4. The app verifies it, keeps a private local copy in data/, and starts the game.
+   Later launches go straight into the game. Use Game > Select ROM to choose again.
+
+Video > Video settings opens the display settings while playing.
+There is no startup settings launcher or console window. Diagnostics are saved
+in data/runtime.log and replaced on each launch.
 
 Keep all DLLs beside the executable. The Microsoft Visual C++ runtime is
 included. No Git, Python, Visual Studio, WSL, or first-run compilation is needed.

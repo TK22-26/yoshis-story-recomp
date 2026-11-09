@@ -16,21 +16,27 @@ never move an inherited Linux tag to a Windows commit.
    Its `--build-info` command reports the compiled source/version without a ROM
    or SDL initialization. Packaging includes only explicitly named programs and
    documentation; `data/` is created empty.
-3. Prepare into a new output directory:
+3. Extract the actual ZIP into a new writable folder with an empty `data/`.
+   Launch it without `YOSHI_DATA_DIR` or launcher overrides, from another working
+   directory. Verify the native ROM picker, Cancel, rejection of a wrong ROM,
+   selection from a Unicode path, direct startup on the next launch, and
+   Game > Select ROM ownership/cancellation. Check Explorer's egg icon, absence
+   of a console, and `data/runtime.log`. Keep this test extraction private.
+4. Prepare into a new output directory:
 
    ```powershell
-   python tools/release.py prepare --tag windows-v1.0.0 --archive dist/yoshis-story-recomp-windows-x64.zip --output dist/releases/windows-v1.0.0
+   python tools/release.py prepare --tag windows-v1.0.1 --archive dist/yoshis-story-recomp-windows-x64.zip --output dist/releases/windows-v1.0.1
    ```
 
    This checks the clean source on `origin/main`, exact patched dependency
    trees, package allowlist, and executable identity. It creates:
-   `Yoshis-Story-1.0.0-windows-x64.zip`, `.inventory.json`, and `.sha256`.
+   `Yoshis-Story-1.0.1-windows-x64.zip`, `.inventory.json`, and `.sha256`.
    It refuses to overwrite existing release artifacts.
-4. Create a GitHub **draft** for `windows-v1.0.0`, targeting the exact commit in the
+5. Create a GitHub **draft** for `windows-v1.0.1`, targeting the exact commit in the
    inventory, and attach only those three files. Write the release notes to a
    UTF-8 file and pass it to `gh release create --draft --target <commit>
    --notes-file <file>`; use `--repo TK22-26/yoshis-story-recomp` explicitly.
-5. Create an annotated `windows-v1.0.0` tag at that same commit and push it. The release
+6. Create an annotated `windows-v1.0.1` tag at that same commit and push it. The release
    workflow runs tests, downloads the draft, and verifies all three assets.
    Tag pushes verify the draft and **do not publish it**.
 

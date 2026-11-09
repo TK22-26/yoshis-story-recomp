@@ -3,6 +3,7 @@ import hashlib
 import json
 from pathlib import Path
 import sys
+import struct
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -91,6 +92,28 @@ class ReleaseVerification(unittest.TestCase):
             self.files[name] = self.files[name].replace(b"\r\n", b"\n").replace(b"\n", b"\r\n")
         self.write_bundle()
         self.verify()
+
+
+class DesktopExecutableVerification(unittest.TestCase):
+    def check_header(self, subsystem, include_icon):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "synthetic.exe"
+            data = bytearray(512)
+            struct.pack_into("<I", data, 0x3c, 128)
+            data[128:132] = b"PE\0\0"
+            struct.pack_into("<H", data, 128 + 24 + 68, subsystem)
+            if include_icon:
+                data += (ROOT / "assets/icon.png").read_bytes()
+            path.write_bytes(data)
+            release.check_desktop_executable(path)
+
+    def test_console_application_rejected(self):
+        with self.assertRaisesRegex(ValueError, "GUI subsystem"):
+            self.check_header(3, True)
+
+    def test_missing_egg_rejected(self):
+        with self.assertRaisesRegex(ValueError, "egg icon"):
+            self.check_header(2, False)
 
 
 if __name__ == "__main__":

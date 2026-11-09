@@ -20,3 +20,4 @@ dist/
 data/mods.json
 *.n64
 *.v64
+data/yoshis_story.z64.*.tmp

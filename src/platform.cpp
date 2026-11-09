@@ -9,13 +9,114 @@
 #include <windows.h>
 #include <dwmapi.h>
 #include <shellapi.h>
+#include <shobjidl.h>
+#include <wrl/client.h>
+#include <io.h>
 #include <SDL_syswm.h>
 #else
 #include <execinfo.h>
 #include <unistd.h>
+#include "gui/rt64_file_dialog.h"
 #endif
 
 namespace platform {
+void start_log(const std::filesystem::path& directory) {
+#ifdef _WIN32
+    // Explorer launches a GUI executable without a console. Explicit output
+    // redirection (including --build-info) remains available to tools.
+    if (GetFileType(GetStdHandle(STD_ERROR_HANDLE)) != FILE_TYPE_UNKNOWN) return;
+    FILE* stream = nullptr;
+    const auto path = directory / "runtime.log";
+    _wfreopen_s(&stream, path.c_str(), L"w", stderr);
+    if (stream) {
+        // Opening the same file twice through freopen can fail Windows sharing
+        // checks. Establish stdout's descriptor first, then share stderr's file.
+        FILE* output = nullptr;
+        _wfreopen_s(&output, L"NUL", L"w", stdout);
+        if (output) {
+            _dup2(_fileno(stderr), _fileno(stdout));
+            setvbuf(stdout, nullptr, _IONBF, 0);
+        }
+        setvbuf(stderr, nullptr, _IONBF, 0);
+    }
+#else
+    (void)directory;
+#endif
+}
+
+#ifdef _WIN32
+namespace {
+LRESULT CALLBACK rom_dialog_icon(int code, WPARAM wp, LPARAM lp) {
+    if (code == HCBT_ACTIVATE) {
+        const HWND window = reinterpret_cast<HWND>(wp);
+        wchar_t class_name[32]{};
+        GetClassNameW(window, class_name, 32);
+        if (wcscmp(class_name, L"#32770") == 0) {
+            const HINSTANCE module = GetModuleHandleW(nullptr);
+            for (const auto kind : {ICON_SMALL, ICON_BIG}) {
+                const int side = GetSystemMetrics(kind == ICON_SMALL ? SM_CXSMICON : SM_CXICON);
+                const HANDLE icon = LoadImageW(module, MAKEINTRESOURCEW(1), IMAGE_ICON,
+                    side, side, LR_SHARED);
+                SendMessageW(window, WM_SETICON, kind, reinterpret_cast<LPARAM>(icon));
+            }
+        }
+    }
+    return CallNextHookEx(nullptr, code, wp, lp);
+}
+}
+#endif
+
+bool select_rom_file(SDL_Window* owner, std::filesystem::path& selected, std::string& error) {
+    selected.clear();
+    error.clear();
+#ifdef _WIN32
+    const HRESULT initialized = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+    if (FAILED(initialized)) {
+        error = "Windows could not initialize the ROM picker.";
+        return false;
+    }
+    HRESULT result;
+    {
+        Microsoft::WRL::ComPtr<IFileOpenDialog> dialog;
+        result = CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER,
+                                  IID_PPV_ARGS(&dialog));
+        if (SUCCEEDED(result)) {
+            const COMDLG_FILTERSPEC filters[] = {{L"Nintendo 64 ROM (*.z64; *.n64; *.v64)", L"*.z64;*.n64;*.v64"}};
+            dialog->SetTitle(L"Select your USA Yoshi's Story ROM");
+            dialog->SetOkButtonLabel(L"Use this ROM");
+            dialog->SetFileTypes(1, filters);
+            dialog->SetOptions(FOS_FORCEFILESYSTEM | FOS_FILEMUSTEXIST | FOS_PATHMUSTEXIST | FOS_NOCHANGEDIR);
+            HWND handle = nullptr;
+            SDL_SysWMinfo info{};
+            SDL_VERSION(&info.version);
+            if (owner && SDL_GetWindowWMInfo(owner, &info)) handle = info.info.win.window;
+            // Native common dialogs have their own HWND; give the startup
+            // picker the same embedded egg icon even before an SDL window exists.
+            const HHOOK hook = SetWindowsHookExW(WH_CBT, rom_dialog_icon, nullptr, GetCurrentThreadId());
+            result = dialog->Show(handle);
+            if (hook) UnhookWindowsHookEx(hook);
+            if (SUCCEEDED(result)) {
+                Microsoft::WRL::ComPtr<IShellItem> item;
+                result = dialog->GetResult(&item);
+                PWSTR path = nullptr;
+                if (SUCCEEDED(result)) result = item->GetDisplayName(SIGDN_FILESYSPATH, &path);
+                if (SUCCEEDED(result)) selected = path;
+                CoTaskMemFree(path);
+            }
+        }
+    }
+    CoUninitialize();
+    if (FAILED(result) && result != HRESULT_FROM_WIN32(ERROR_CANCELLED))
+        error = "Windows could not open the ROM picker. Please restart the app and try again.";
+#else
+    (void)owner;
+    RT64::FileDialog::initialize();
+    selected = RT64::FileDialog::getOpenFilename({{"Nintendo 64 ROM", "z64,n64,v64"}});
+    RT64::FileDialog::finish();
+#endif
+    return !selected.empty();
+}
+
 float window_scale(SDL_Window* window) {
 #ifdef _WIN32
     SDL_SysWMinfo info{};

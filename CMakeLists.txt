@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(yoshis_story_recomp VERSION 1.0.0)
+project(yoshis_story_recomp VERSION 1.0.1)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED True)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -167,12 +167,13 @@ endif()
 add_executable(yoshis_story_recomp
     "${CMAKE_CURRENT_SOURCE_DIR}/src/main.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/platform.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/rom_file.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/rom_setup.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/ui_style.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/settings_widgets.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/ui_images.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/controller_devices.cpp"
-    # Settings window shown before the game (Dear ImGui from RT64, drawn with
-    # SDL_Renderer; RT64 itself only builds the Vulkan backend).
+    # Shared settings persistence and SDL window icon.
     "${CMAKE_CURRENT_SOURCE_DIR}/src/launcher.cpp"
     # In-game settings overlay (ImGui drawn through RT64's Inspector). See
     # docs/OVERLAY_PLAN.md.
@@ -219,12 +220,24 @@ if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64|i.86")
 endif()
 
 if(WIN32)
+    enable_language(RC)
+    set(YOSHI_ICON "${CMAKE_CURRENT_BINARY_DIR}/generated/yoshi.ico")
+    add_custom_command(OUTPUT "${YOSHI_ICON}"
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tools/make_windows_icon.py"
+            "${CMAKE_CURRENT_SOURCE_DIR}/assets/icon.png" "${YOSHI_ICON}"
+        DEPENDS tools/make_windows_icon.py assets/icon.png VERBATIM)
+    configure_file(src/windows.rc.in generated/app_resources.rc @ONLY)
+    set_source_files_properties("${CMAKE_CURRENT_BINARY_DIR}/generated/app_resources.rc"
+        PROPERTIES OBJECT_DEPENDS "${YOSHI_ICON}")
+    target_sources(yoshis_story_recomp PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated/app_resources.rc" "${YOSHI_ICON}")
+    set_target_properties(yoshis_story_recomp PROPERTIES WIN32_EXECUTABLE TRUE)
+    target_link_options(yoshis_story_recomp PRIVATE /ENTRY:mainCRTStartup)
     target_sources(librecomp PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src/windows_memory.cpp")
     target_include_directories(librecomp PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
     target_compile_definitions(librecomp PRIVATE YOSHI_WINDOWS_RDRAM)
     target_link_libraries(librecomp PRIVATE synchronization onecore)
     target_include_directories(yoshis_story_recomp PRIVATE "${RT64_PATH}/src/contrib/dxc/inc")
-    target_link_libraries(yoshis_story_recomp PRIVATE dwmapi)
+    target_link_libraries(yoshis_story_recomp PRIVATE dwmapi ole32 shell32 uuid)
     target_compile_options(yoshis_story_recomp PRIVATE /Zi)
     target_link_options(yoshis_story_recomp PRIVATE /DEBUG /OPT:REF /OPT:ICF)
 endif()
@@ -329,6 +342,9 @@ if(WIN32)
 
     include(CTest)
     if(BUILD_TESTING)
+        add_executable(rom_file_test tests/rom_file_test.cpp src/rom_file.cpp)
+        target_include_directories(rom_file_test PRIVATE src)
+        add_test(NAME rom_file COMMAND rom_file_test)
         add_executable(windows_memory_test tests/windows_memory_test.cpp src/windows_memory.cpp)
         target_include_directories(windows_memory_test PRIVATE src)
         target_link_libraries(windows_memory_test PRIVATE onecore)

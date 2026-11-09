@@ -30,6 +30,7 @@
 #include "gui/rt64_inspector.h"
 
 #include "launcher.h"
+#include "rom_setup.h"
 #include "ui_style.h"
 #include "settings_widgets.h"
 #include "ui_images.h"
@@ -628,6 +629,7 @@ void draw_menu_bar() {
             if (desktop_menu_item(game_pause::is_paused() ? "Resume game" : "Pause game", "Pause"))
                 g_menu_action.store(5);
             if (desktop_menu_item("Restart game")) g_menu_action.store(1);
+            if (desktop_menu_item("Select ROM...")) g_menu_action.store(6);
             desktop_menu_separator();
             if (desktop_menu_item("Quit", "Alt+F4")) g_menu_action.store(2);
             end_desktop_menu();
@@ -980,6 +982,15 @@ void process_actions() {
         else std::_Exit(0);
     } else if (action == 5) {
         g_manual_pause = !g_manual_pause;
+    } else if (action == 6) {
+        const bool paused = game_pause::is_paused();
+        game_pause::set_paused(true);
+        audio_set_paused(true);
+        // Native dialogs run on SDL's main thread, outside the renderer lock.
+        ensure_rom(g_settings_path.parent_path(), g_sdl_window, true);
+        // Every accepted ROM has the same verified contents; no restart needed.
+        game_pause::set_paused(paused);
+        audio_set_paused(paused);
     } else if (action > 2) {
         const auto folder = action == 4 ? g_settings_path.parent_path() / "saves" : g_settings_path.parent_path();
         if (!platform::open_folder(folder)) fprintf(stderr, "[menu] Could not open folder\n");

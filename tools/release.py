@@ -66,6 +66,24 @@ def check_dependency(path, expected):
         raise ValueError("Untracked dependency files: " + path.name)
 
 
+def check_desktop_executable(path):
+    # A console subsystem accidentally shipped in 1.0.0. Check the actual PE,
+    # and Windows' ability to extract the approved egg, before publishing again.
+    import ctypes
+    import struct
+    data = path.read_bytes()
+    offset = struct.unpack_from("<I", data, 0x3c)[0]
+    if data[offset:offset + 4] != b"PE\0\0" or struct.unpack_from("<H", data, offset + 24 + 68)[0] != 2:
+        raise ValueError("The application must use the Windows GUI subsystem")
+    if (ROOT / "assets/icon.png").read_bytes() not in data:
+        raise ValueError("The application does not embed the approved egg icon")
+    extract = ctypes.WinDLL("shell32").ExtractIconExW
+    extract.argtypes = [ctypes.c_wchar_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint]
+    extract.restype = ctypes.c_uint
+    if not extract(str(path), -1, None, None, 0):
+        raise ValueError("Windows cannot extract an icon from the application")
+
+
 def build_info(archive_path):
     # Extract only the verified executable/runtime names, never data or an
     # arbitrary ZIP path. This command exits before any ROM/game initialization.
@@ -73,7 +91,9 @@ def build_info(archive_path):
         with zipfile.ZipFile(archive_path) as archive:
             for name in PROGRAMS:
                 (Path(temp) / name).write_bytes(archive.read(name))
-        process = subprocess.run([str(Path(temp) / "yoshis_story_recomp.exe"), "--build-info"],
+        executable = Path(temp) / "yoshis_story_recomp.exe"
+        check_desktop_executable(executable)
+        process = subprocess.run([str(executable), "--build-info"],
                                  cwd=temp, capture_output=True, text=True, timeout=30, check=True)
         return json.loads(process.stdout)
 
