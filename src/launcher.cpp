@@ -6,6 +6,8 @@
 // navigation is fed to ImGui here.
 
 #include "launcher.h"
+#include "platform.h"
+#include "ui_style.h"
 
 #include <algorithm>
 #include <cmath>
@@ -15,7 +17,6 @@
 #include <cstring>
 #include <fstream>
 #include <string>
-#include <strings.h>
 
 #include <SDL.h>
 #include "imgui.h"
@@ -139,7 +140,7 @@ void settings_load(const std::filesystem::path& path) {
 void settings_save(const std::filesystem::path& path) {
     std::ofstream out(path);
     if (!out) {
-        fprintf(stderr, "[settings] could not write %s\n", path.c_str());
+        fprintf(stderr, "[settings] could not write %s\n", path.string().c_str());
         return;
     }
     const YoshiSettings& s = g_settings;
@@ -174,9 +175,9 @@ void settings_save(const std::filesystem::path& path) {
 void settings_apply_env() {
     YoshiSettings& s = g_settings;
     if (const char* v = getenv("YOSHI_RES")) {
-        if (!strcasecmp(v, "native") || !strcasecmp(v, "original")) {
+        if (!SDL_strcasecmp(v, "native") || !SDL_strcasecmp(v, "original")) {
             s.resolution = YoshiSettings::Native;
-        } else if (!strcasecmp(v, "window") || !strcasecmp(v, "auto")) {
+        } else if (!SDL_strcasecmp(v, "window") || !SDL_strcasecmp(v, "auto")) {
             s.resolution = YoshiSettings::Window;
         } else if (atof(v) > 0.0) {
             s.resolution = YoshiSettings::Manual;
@@ -188,13 +189,13 @@ void settings_apply_env() {
     if (const char* v = getenv("YOSHI_SSAA")) s.ssaa = std::max(1, atoi(v));
     if (const char* v = getenv("YOSHI_MSAA")) s.msaa = atoi(v);
     if (const char* v = getenv("YOSHI_UPSCALE2D")) {
-        if (!strcasecmp(v, "all") || !strcmp(v, "1")) s.upscale2D = 2;
-        else if (!strcasecmp(v, "scaled")) s.upscale2D = 1;
+        if (!SDL_strcasecmp(v, "all") || !strcmp(v, "1")) s.upscale2D = 2;
+        else if (!SDL_strcasecmp(v, "scaled")) s.upscale2D = 1;
         else s.upscale2D = 0;
     }
     if (const char* v = getenv("YOSHI_FILTER")) {
-        if (!strcasecmp(v, "nearest")) s.filter = 0;
-        else if (!strcasecmp(v, "linear")) s.filter = 1;
+        if (!SDL_strcasecmp(v, "nearest")) s.filter = 0;
+        else if (!SDL_strcasecmp(v, "linear")) s.filter = 1;
         else s.filter = 2;
     }
     if (const char* v = getenv("YOSHI_CRT")) s.crt = std::clamp(float(atof(v)), 0.0f, 1.0f);
@@ -355,6 +356,7 @@ bool run_launcher(const std::filesystem::path& settingsPath) {
 
     SDL_SetWindowSize(window, winW, winH);
     SDL_SetWindowPosition(window, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
+    platform::apply_window_chrome(window);
     SDL_ShowWindow(window);
 
     SDL_Texture* logo = nullptr;
@@ -373,22 +375,12 @@ bool run_launcher(const std::filesystem::path& settingsPath) {
     ImGuiIO& io = ImGui::GetIO();
     io.IniFilename = nullptr;
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard | ImGuiConfigFlags_NavEnableGamepad;
-    ImGui::StyleColorsDark();
+    const float density = platform::window_scale(window);
+    ui::apply_style(density);
     ImGuiStyle& style = ImGui::GetStyle();
-    style.WindowPadding = ImVec2(20, 18);
-    style.FramePadding = ImVec2(10, 6);
-    style.ItemSpacing = ImVec2(10, 10);
-    style.FrameRounding = 4.0f;
-    style.GrabRounding = 4.0f;
-    // Rasterize the font at the real pixel density (HiDPI) so it stays sharp.
-    int pixelW = winW, logicalW = winW;
-    SDL_GetRendererOutputSize(renderer, &pixelW, nullptr);
-    SDL_GetWindowSize(window, &logicalW, nullptr);
-    const float density = (logicalW > 0 && pixelW > logicalW) ? float(pixelW) / float(logicalW) : 1.0f;
-    ImFontConfig fontCfg;
-    fontCfg.SizePixels = 22.0f * density;
-    io.Fonts->AddFontDefault(&fontCfg);
-    io.FontGlobalScale = 1.0f / density;
+    ui::Fonts fonts;
+    fonts.load(14);
+    io.FontDefault = fonts.at(density);
 
     ImGui_ImplSDL2_InitForSDLRenderer(window, renderer);
     ImGui_ImplSDLRenderer2_Init(renderer);
@@ -411,6 +403,8 @@ bool run_launcher(const std::filesystem::path& settingsPath) {
             }
         }
 
+        ui::apply_style(platform::window_scale(window));
+        io.FontDefault = fonts.at(platform::window_scale(window));
         ImGui_ImplSDLRenderer2_NewFrame();
         ImGui_ImplSDL2_NewFrame();
         ImGui::NewFrame();

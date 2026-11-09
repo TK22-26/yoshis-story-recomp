@@ -1,3 +1,6 @@
+> Historical upstream plan. This fork now uses a compact desktop menu and native
+> owned settings windows with cooperative game pause. See the README for current controls.
+
 # In-game settings overlay — implementation plan
 
 Target: an in-game ImGui settings overlay inspired by [ThatGuyMcd/DKR-R](https://github.com/ThatGuyMcd/DKR-R).

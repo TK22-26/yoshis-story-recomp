@@ -3,6 +3,11 @@
 A native PC port of Yoshi's Story (N64, US) built with static recompilation.
 You supply the ROM; this repo supplies everything else.
 
+This fork adds native **Windows x64** support to
+[damobeanrod's Linux port](https://github.com/damobeanrod/yoshis-story-recomp).
+No ROM, textures, music, or other extracted Nintendo assets are included.
+The original project-created egg icon is retained.
+
 Uses [N64Recomp](https://github.com/N64Recomp/N64Recomp),
 [N64ModernRuntime](https://github.com/N64Recomp/N64ModernRuntime) and
 [RT64](https://github.com/rt64/rt64).
@@ -11,7 +16,7 @@ Uses [N64Recomp](https://github.com/N64Recomp/N64Recomp),
 
 > **⚠️ AI-generated project — please read before using or contributing**
 >
-> This port was created primarily by [Claude](https://claude.ai) (Anthropic's
+> The original Linux port was created primarily by [Claude](https://claude.ai) (Anthropic's
 > AI assistant), directed by a hobbyist with no prior N64 or graphics
 > programming experience. Almost all of the C++, Python tooling, CMake, and
 > RT64 patches in this repo were written by Claude in an interactive session —
@@ -32,12 +37,94 @@ Uses [N64Recomp](https://github.com/N64Recomp/N64Recomp),
 ## Requirements
 
 - A Yoshi's Story (US) ROM: `yoshis_story.z64`
-- A Vulkan-capable GPU and driver
-- Linux (Ubuntu 24.04+ or equivalent; NixOS also supported)
+- A Vulkan-capable GPU and driver (Windows also supports Direct3D 12)
+- Windows 10 version 1803 or newer, x64; or Linux (Ubuntu 24.04+ or equivalent; NixOS also supported)
 
-## Getting started — AppImage (easiest)
+## Windows validation
 
-Download the AppImage from the [releases page](../../releases), make it
+Built and exercised on Windows 11 x64 with Direct3D 12. Checked startup from a
+separate working directory, keyboard/controller input, EEPROM save creation,
+owned settings windows, pause/resume, restart, and borderless/windowed changes.
+The automated tests cover RDRAM aliases and the pause clock without a ROM.
+This is an initial Windows port, not a complete campaign playthrough. Linux and
+the Windows Vulkan backend have not been retested for this fork.
+
+## Getting started on Windows
+
+Extract the Windows ZIP into a writable folder. Keep `SDL2.dll`,
+`dxcompiler.dll`, and `dxil.dll` beside `yoshis_story_recomp.exe`.
+Put your own US ROM at `data/yoshis_story.z64`, then run the executable.
+The launcher, keyboard/controller input, settings, and saves work through SDL2.
+The console displays diagnostic messages while the game is running.
+
+```text
+yoshis_story_recomp.exe
+SDL2.dll
+dxcompiler.dll
+dxil.dll
+data/
+  yoshis_story.z64       <- supplied locally by you
+  saves/                <- created by the game
+```
+
+Install the [Microsoft Visual C++ x64 runtime](https://aka.ms/vs/17/release/vc_redist.x64.exe)
+if Windows reports a missing `VCRUNTIME140` or `MSVCP140` DLL. Use a current
+GPU driver. The Windows renderer chooses Direct3D 12 by default and can fall
+back to Vulkan. The game reserves a 4 GiB address range; Windows needs about
+4 GiB of available memory/page-file commit, although physical pages are
+populated as they are used.
+
+## Build from source on Windows
+
+Prerequisites:
+
+- Git, Python 3.9+, CMake 3.24+, and Ninja.
+- Visual Studio 2022 or Build Tools with **Desktop development with C++**, an
+  x64 MSVC toolchain, and a Windows 10/11 SDK.
+- LLVM 20.1.8 or newer with `clang-cl`, `clang`, and `lld-link`. The helper
+  searches the normal LLVM installation and Visual Studio tool directories.
+
+From PowerShell:
+
+```powershell
+git clone --recursive https://github.com/TK22-26/yoshis-story-recomp.git
+cd yoshis-story-recomp
+powershell -ExecutionPolicy Bypass -File tools/build_windows.ps1 -Rom 'C:\Games\YoshisStoryUS.z64' -Package
+.\build\yoshis_story_recomp.exe
+```
+
+The helper downloads SDL 2.32.10 with a pinned SHA-256, checks out
+N64ModernRuntime at `cdf5abbd5026fef5c364c676e4667c45e42b6863` under `.deps/`,
+builds the game and RSP audio recompiler, and runs the memory and pause tests.
+The ROM is copied only to the ignored local `data/` directory. Generated
+audio code stays under `build/rsp/`.
+
+`-Package` creates `dist/yoshis-story-recomp-windows-x64.zip`. Packaging uses
+an explicit executable/DLL/documentation list and creates an empty `data/`
+folder; it never copies your ROM, saves, settings, or generated source files.
+`tools/check_package.py` rejects files outside the program/documentation allowlist.
+
+For an existing dependency setup, run from an x64 developer shell with LLVM
+and Ninja on `PATH`:
+
+```powershell
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release `
+  -DCMAKE_C_COMPILER=clang-cl -DCMAKE_CXX_COMPILER=clang-cl `
+  -DN64MR_PATH=C:/src/N64ModernRuntime -DSDL2_DIR=C:/deps/SDL2-2.32.10/cmake
+cmake --build build --parallel 8
+ctest --test-dir build --output-on-failure
+cpack --config build/CPackConfig.cmake -B dist -C Release
+```
+
+The Windows CI test checks shared RDRAM aliases, independent hardware-register
+memory, the full address range, and cleanup without any ROM. A full game
+build and gameplay test require a locally supplied ROM. Runtime changes are
+reproducible patches in `patches/runtime/`; Linux retains its existing memory
+and SDL/Vulkan paths.
+
+## Getting started on Linux — upstream AppImage
+
+Download the original Linux AppImage from the [upstream releases](https://github.com/damobeanrod/yoshis-story-recomp/releases), make it
 executable, then set up your files next to it:
 
 ```
@@ -74,7 +161,7 @@ sudo apt install build-essential cmake ninja-build pkg-config python3 \
 ### 2. Clone
 
 ```bash
-git clone --recursive https://github.com/damobeanrod/yoshis-story-recomp
+git clone --recursive https://github.com/TK22-26/yoshis-story-recomp
 cd yoshis-story-recomp
 ```
 
@@ -208,7 +295,8 @@ in this order:
 3. `../data/` relative to the executable (so `build/` inside the repo works)
 
 The executable's real path is used, so symlinks and PATH launches work.
-RT64's own config (`rt64.json`) lives in `~/.config/.yoshis_story_recomp/`.
+RT64's own config (`rt64.json`) lives in `%LOCALAPPDATA%/yoshis_story_recomp/`
+on Windows and `~/.config/.yoshis_story_recomp/` on Linux.
 
 ---
 
@@ -228,7 +316,16 @@ keyboard simultaneously. Rumble is forwarded to the controller.
 | C buttons | I J K L | Right stick |
 | D-pad | T F G H | D-pad |
 
-Open the in-game overlay with **F1** to remap bindings in the Controls tab.
+Use **Controllers > Controller mapping** to remap inputs, or **F1** / **Esc** /
+controller **Back** to open settings. Settings are native windows owned by the
+game window. They pause the game until closed, preserving a manual pause.
+
+The desktop menu uses JFG's compact 24 dp bar and 26 dp dropdown rows with a
+dark green, cream, and soft green palette. Windows uses an installed Segoe UI
+font and per-monitor DPI awareness; no font assets are bundled. **Game >
+Pause game / Resume game** or the **Pause** key freezes/resumes guest execution,
+audio, and game timers while the menu stays usable. **Ctrl+M** toggles mute.
+The top menu hides in borderless mode until settings or pause is opened.
 
 ---
 

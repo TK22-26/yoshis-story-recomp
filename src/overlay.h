@@ -1,6 +1,5 @@
-// In-game settings overlay. See docs/OVERLAY_PLAN.md.
-// Toggle with ESC (keyboard) or Back/Select (controller). While visible,
-// game input is swallowed so the player effectively pauses.
+// Desktop menu and native settings windows owned by the game window.
+// F1 / Esc / Controller Back opens settings; Pause toggles game execution.
 
 #pragma once
 
@@ -24,6 +23,8 @@ void draw(RT64::Application& app);
 // Toggles visibility on ESC / F1 / Controller Back. Routes other events to
 // the Inspector's ImGui backend when visible.
 bool handle_event(SDL_Event* event);
+// Dispatch restart, exit and folder-opening requests on SDL's main thread.
+void process_actions();
 
 void toggle();
 bool is_visible();

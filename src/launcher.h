@@ -58,11 +58,11 @@ extern std::filesystem::path g_settings_path;
 
 void settings_load(const std::filesystem::path& path);
 void settings_save(const std::filesystem::path& path);
-// Push g_settings into RT64's live config (resolution, SSAA, MSAA, upscale2D,
-// filter). Called at init and after changes made from the in-game overlay.
+// Push settings into RT64. MSAA is applied only at initialization; changing it
+// while rendering can invalidate resources still in use.
 // CRT, crop and fullscreen have their own apply paths; see overlay.cpp.
 namespace RT64 { struct Application; }
-void apply_display_settings(RT64::Application* app);
+void apply_display_settings(RT64::Application* app, bool initialize = false);
 // Apply YOSHI_RES / YOSHI_SSAA / YOSHI_MSAA / YOSHI_UPSCALE2D / YOSHI_FILTER /
 // YOSHI_CRT / YOSHI_CROP / YOSHI_FULLSCREEN over g_settings.
 void settings_apply_env();
@@ -70,6 +70,8 @@ void settings_apply_env();
 // The game's Vulkan window, created in main(). Used by the overlay for its
 // fullscreen toggle. Null before window creation and after shutdown.
 extern SDL_Window* g_sdl_window;
+// Queue window changes for SDL's main thread; safe from the renderer UI.
+void request_fullscreen(bool fullscreen);
 
 // Mute / unmute the SDL audio device (hardware pause). Separate from the
 // software volume scale; used if needed for a true hardware silence.

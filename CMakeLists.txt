@@ -4,9 +4,21 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED True)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-find_package(SDL2 REQUIRED)
+find_package(SDL2 2.26 REQUIRED)
+find_package(Threads REQUIRED)
+find_package(Python3 3.9 REQUIRED COMPONENTS Interpreter)
 
-set(N64MR_PATH "${CMAKE_CURRENT_SOURCE_DIR}/../N64ModernRuntime")
+if(WIN32)
+    if(NOT CMAKE_SIZEOF_VOID_P EQUAL 8 OR NOT CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+        message(FATAL_ERROR "Windows builds require x64 Clang (clang-cl) and the Windows SDK.")
+    endif()
+    add_compile_definitions(NOMINMAX SDL_MAIN_HANDLED _CRT_SECURE_NO_WARNINGS)
+endif()
+
+set(N64MR_PATH "${CMAKE_CURRENT_SOURCE_DIR}/../N64ModernRuntime" CACHE PATH "N64ModernRuntime checkout")
+if(NOT EXISTS "${N64MR_PATH}/librecomp/CMakeLists.txt")
+    message(FATAL_ERROR "N64ModernRuntime was not found. See README or pass -DN64MR_PATH=...")
+endif()
 set(RT64_PATH  "${CMAKE_CURRENT_SOURCE_DIR}/rt64")
 
 # Build RT64 as a static library using the SDL/Vulkan window path.
@@ -17,6 +29,7 @@ set(RT64_PATH  "${CMAKE_CURRENT_SOURCE_DIR}/rt64")
 
 # Prefer explicit hints (pass -DX11_INCLUDE_DIR=... and -DXORGPROTO_INCLUDE_DIR=...
 # on the cmake command line if FindX11 can't locate them automatically).
+if(UNIX AND NOT APPLE)
 find_package(X11 QUIET)
 
 # xorgproto provides X11/X.h, which is a separate package from libX11 on NixOS.
@@ -28,11 +41,15 @@ endif()
 if(NOT XORGPROTO_INCLUDE_DIR AND EXISTS "/nix/store")
     # NixOS-specific fallback: glob for the xorgproto package.
     file(GLOB _xproto_paths "/nix/store/*-xorgproto-*/include")
-    list(GET _xproto_paths 0 XORGPROTO_INCLUDE_DIR)
+    if(_xproto_paths)
+        list(GET _xproto_paths 0 XORGPROTO_INCLUDE_DIR)
+    endif()
 endif()
 if(NOT X11_INCLUDE_DIR AND EXISTS "/nix/store")
     file(GLOB _x11_paths "/nix/store/*-libx11-*-dev/include")
-    list(GET _x11_paths 0 X11_INCLUDE_DIR)
+    if(_x11_paths)
+        list(GET _x11_paths 0 X11_INCLUDE_DIR)
+    endif()
 endif()
 
 # FindX11 can return a list of directories (one per X11 lib on NixOS), so
@@ -45,34 +62,69 @@ if(XORGPROTO_INCLUDE_DIR)
 endif()
 message(STATUS "X11 include: ${X11_INCLUDE_DIR}")
 message(STATUS "xorgproto include: ${XORGPROTO_INCLUDE_DIR}")
+endif()
 
 set(RT64_STATIC ON CACHE BOOL "" FORCE)
-set(RT64_SDL_WINDOW_VULKAN ON CACHE BOOL "" FORCE)
+if(WIN32)
+    set(RT64_SDL_WINDOW_VULKAN OFF CACHE BOOL "" FORCE)
+else()
+    set(RT64_SDL_WINDOW_VULKAN ON CACHE BOOL "" FORCE)
+endif()
 # Local RT64 fixes kept as patches (upstream RT64 lacks them), applied to the
 # submodule at configure time unless already applied. See patches/rt64/.
 file(GLOB RT64_PATCHES "${CMAKE_CURRENT_SOURCE_DIR}/patches/rt64/*.patch")
 list(SORT RT64_PATCHES)
-# A patch that applies cleanly is applied; one that doesn't is assumed to be
-# applied already (a reverse check can fail once a later patch edits nearby
-# lines). After changing a patch: git -C rt64 checkout -- . and re-run cmake.
+# Ignore context whitespace so Windows CRLF checkouts work. A failed forward
+# check is only accepted when the reverse check confirms the patch is present.
 foreach(RT64_PATCH ${RT64_PATCHES})
-    execute_process(COMMAND git apply --check "${RT64_PATCH}"
+    execute_process(COMMAND git apply --ignore-space-change --check "${RT64_PATCH}"
         WORKING_DIRECTORY "${RT64_PATH}" RESULT_VARIABLE RT64_PATCH_APPLIES OUTPUT_QUIET ERROR_QUIET)
     if(RT64_PATCH_APPLIES EQUAL 0)
-        execute_process(COMMAND git apply "${RT64_PATCH}"
+        execute_process(COMMAND git apply --ignore-space-change "${RT64_PATCH}"
             WORKING_DIRECTORY "${RT64_PATH}" RESULT_VARIABLE RT64_PATCH_RESULT)
         if(NOT RT64_PATCH_RESULT EQUAL 0)
             message(FATAL_ERROR "Failed to apply ${RT64_PATCH} to ${RT64_PATH}")
         endif()
         message(STATUS "Applied RT64 patch ${RT64_PATCH}")
     else()
+        execute_process(COMMAND git apply --ignore-space-change --reverse --check "${RT64_PATCH}"
+            WORKING_DIRECTORY "${RT64_PATH}" RESULT_VARIABLE RT64_PATCH_REVERSES OUTPUT_QUIET ERROR_QUIET)
+        if(NOT RT64_PATCH_REVERSES EQUAL 0)
+            message(FATAL_ERROR "RT64 patch does not apply and is not already present: ${RT64_PATCH}")
+        endif()
         message(STATUS "RT64 patch already applied: ${RT64_PATCH}")
     endif()
 endforeach()
 
 add_subdirectory("${RT64_PATH}" rt64_build)
 
+if(WIN32)
+    set(_runtime_patch "${CMAKE_CURRENT_SOURCE_DIR}/patches/runtime/0001-windows-rdram.patch")
+    execute_process(COMMAND git apply --reverse --check "${_runtime_patch}"
+        WORKING_DIRECTORY "${N64MR_PATH}" RESULT_VARIABLE _already_applied OUTPUT_QUIET ERROR_QUIET)
+    if(NOT _already_applied EQUAL 0)
+        execute_process(COMMAND git apply "${_runtime_patch}"
+            WORKING_DIRECTORY "${N64MR_PATH}" RESULT_VARIABLE _patch_result)
+        if(NOT _patch_result EQUAL 0)
+            message(FATAL_ERROR "Cannot patch N64ModernRuntime. Use the pinned revision in README.")
+        endif()
+    endif()
+endif()
+
+# The pause patch is platform independent; no game bytes are embedded.
+set(_pause_patch "${CMAKE_CURRENT_SOURCE_DIR}/patches/runtime/0002-game-pause.patch")
+execute_process(COMMAND git apply --ignore-space-change --reverse --check "${_pause_patch}"
+    WORKING_DIRECTORY "${N64MR_PATH}" RESULT_VARIABLE _pause_applied OUTPUT_QUIET ERROR_QUIET)
+if(NOT _pause_applied EQUAL 0)
+    execute_process(COMMAND git apply --ignore-space-change "${_pause_patch}"
+        WORKING_DIRECTORY "${N64MR_PATH}" RESULT_VARIABLE _pause_result)
+    if(NOT _pause_result EQUAL 0)
+        message(FATAL_ERROR "Cannot apply game pause patch to N64ModernRuntime.")
+    endif()
+endif()
 add_subdirectory("${N64MR_PATH}/ultramodern" ultramodern_build)
+target_sources(ultramodern PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src/game_pause.cpp")
+target_include_directories(ultramodern PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
 add_subdirectory("${N64MR_PATH}/librecomp" librecomp_build)
 
 # Compile the recompiled game functions (C99, one translation unit per file).
@@ -97,18 +149,22 @@ set_target_properties(game_funcs PROPERTIES INTERPROCEDURAL_OPTIMIZATION FALSE)
 # non-aliasing and may elide a MEM_HU reload after a MEM_W store — silently
 # propagating stale register values across the generated function body
 # (e.g. a1=0x40B9 stored as word, then read back as halfword returning 0).
-target_compile_options(game_funcs PRIVATE
-    $<IF:$<CONFIG:Debug>,-O0,-O2>
-    -fno-strict-aliasing
-    -Wno-unused-variable -Wno-unused-but-set-variable)
-# Prototypes for N64Recomp-ignored functions the generated code calls; see
-# src/ignored_funcs.h. Force-included so regeneration never drops them.
-target_compile_options(game_funcs PRIVATE
-    -include "${CMAKE_CURRENT_SOURCE_DIR}/src/ignored_funcs.h")
+if(MSVC)
+    target_compile_options(game_funcs PRIVATE
+        $<IF:$<CONFIG:Debug>,/Od,/O2> /clang:-fno-strict-aliasing
+        "/FI${CMAKE_CURRENT_SOURCE_DIR}/src/ignored_funcs.h")
+else()
+    target_compile_options(game_funcs PRIVATE
+        $<IF:$<CONFIG:Debug>,-O0,-O2> -fno-strict-aliasing
+        -Wno-unused-variable -Wno-unused-but-set-variable
+        -include "${CMAKE_CURRENT_SOURCE_DIR}/src/ignored_funcs.h")
+endif()
 
 # Main executable
 add_executable(yoshis_story_recomp
     "${CMAKE_CURRENT_SOURCE_DIR}/src/main.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/platform.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/ui_style.cpp"
     # Settings window shown before the game (Dear ImGui from RT64, drawn with
     # SDL_Renderer; RT64 itself only builds the Vulkan backend).
     "${CMAKE_CURRENT_SOURCE_DIR}/src/launcher.cpp"
@@ -117,63 +173,39 @@ add_executable(yoshis_story_recomp
     "${CMAKE_CURRENT_SOURCE_DIR}/src/overlay.cpp"
     "${RT64_PATH}/src/contrib/imgui/backends/imgui_impl_sdlrenderer2.cpp"
 )
-# rsp/aspMain.cpp is generated from the ROM at configure time and is not
-# committed. On first configure, we build RSPRecomp from N64ModernRuntime and
-# run gen_aspmain.py. Subsequent configures skip this if the file already exists.
-set(ASP_MAIN_CPP "${CMAKE_CURRENT_SOURCE_DIR}/rsp/aspMain.cpp")
-set(YOSHI_ROM    "${CMAKE_CURRENT_SOURCE_DIR}/data/yoshis_story.z64")
-
-if(NOT EXISTS "${ASP_MAIN_CPP}")
-    if(NOT EXISTS "${YOSHI_ROM}")
-        message(FATAL_ERROR
-            "ROM not found at data/yoshis_story.z64\n"
-            "Copy your yoshis_story.z64 there before running cmake.\n"
-            "The ROM is needed once to generate the recompiled audio microcode.")
-    endif()
-    find_package(Python3 REQUIRED COMPONENTS Interpreter)
-    set(_rsprecomp_build "${CMAKE_BINARY_DIR}/rsprecomp_build")
-    message(STATUS "Building RSPRecomp (first configure only)...")
-    execute_process(
-        COMMAND ${CMAKE_COMMAND}
-            -S "${N64MR_PATH}/N64Recomp"
-            -B "${_rsprecomp_build}"
-            -DCMAKE_BUILD_TYPE=Release
-            --no-warn-unused-cli
-        RESULT_VARIABLE _r OUTPUT_QUIET ERROR_QUIET)
-    if(NOT _r EQUAL 0)
-        message(FATAL_ERROR "RSPRecomp configure failed")
-    endif()
-    execute_process(
-        COMMAND ${CMAKE_COMMAND} --build "${_rsprecomp_build}" --target RSPRecomp -j
-        RESULT_VARIABLE _r)
-    if(NOT _r EQUAL 0)
-        message(FATAL_ERROR "RSPRecomp build failed")
-    endif()
-    set(_rsprecomp_bin "${_rsprecomp_build}/RSPRecomp")
-    if(NOT EXISTS "${_rsprecomp_bin}")
-        message(FATAL_ERROR "RSPRecomp built but binary not found at ${_rsprecomp_bin}")
-    endif()
-    message(STATUS "Generating rsp/aspMain.cpp from ROM audio microcode...")
-    execute_process(
-        COMMAND ${Python3_EXECUTABLE}
-            "${CMAKE_CURRENT_SOURCE_DIR}/tools/gen_aspmain.py"
-            --rom "${YOSHI_ROM}"
-            --rsprecomp "${_rsprecomp_bin}"
-        RESULT_VARIABLE _r)
-    if(NOT _r EQUAL 0)
-        message(FATAL_ERROR "gen_aspmain.py failed")
-    endif()
-    if(NOT EXISTS "${ASP_MAIN_CPP}")
-        message(FATAL_ERROR "gen_aspmain.py ran but rsp/aspMain.cpp was not created")
-    endif()
-    message(STATUS "rsp/aspMain.cpp generated successfully")
+# Build the audio recompiler with the same generator/toolchain, then generate
+# only into the build directory. Neither the ROM nor generated audio is shipped.
+set(YOSHI_ROM "${CMAKE_CURRENT_SOURCE_DIR}/data/yoshis_story.z64" CACHE FILEPATH "User-supplied US ROM")
+if(NOT EXISTS "${YOSHI_ROM}")
+    message(FATAL_ERROR "Copy your US ROM to data/yoshis_story.z64 or set -DYOSHI_ROM=...")
 endif()
-
+set(ASP_MAIN_CPP "${CMAKE_CURRENT_BINARY_DIR}/rsp/aspMain.cpp")
+add_custom_command(OUTPUT "${ASP_MAIN_CPP}"
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tools/gen_aspmain.py"
+        --rom "${YOSHI_ROM}" --rsprecomp "$<TARGET_FILE:RSPRecomp>"
+        --output-dir "${CMAKE_CURRENT_BINARY_DIR}/rsp"
+    DEPENDS RSPRecomp "${YOSHI_ROM}" "${CMAKE_CURRENT_SOURCE_DIR}/tools/gen_aspmain.py"
+    VERBATIM)
 target_sources(yoshis_story_recomp PRIVATE "${ASP_MAIN_CPP}")
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64|i.86")
-    set_source_files_properties("${ASP_MAIN_CPP}"
-        PROPERTIES COMPILE_OPTIONS "-msse4.1")
+    if(MSVC)
+        set_source_files_properties("${ASP_MAIN_CPP}" PROPERTIES COMPILE_OPTIONS "/clang:-msse4.1")
+    else()
+        set_source_files_properties("${ASP_MAIN_CPP}" PROPERTIES COMPILE_OPTIONS "-msse4.1")
+    endif()
 endif()
+
+if(WIN32)
+    target_sources(librecomp PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src/windows_memory.cpp")
+    target_include_directories(librecomp PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    target_compile_definitions(librecomp PRIVATE YOSHI_WINDOWS_RDRAM)
+    target_link_libraries(librecomp PRIVATE synchronization onecore)
+    target_include_directories(yoshis_story_recomp PRIVATE "${RT64_PATH}/src/contrib/dxc/inc")
+    target_link_libraries(yoshis_story_recomp PRIVATE dwmapi)
+    target_compile_options(yoshis_story_recomp PRIVATE /Zi)
+    target_link_options(yoshis_story_recomp PRIVATE /DEBUG /OPT:REF /OPT:ICF)
+endif()
+
 target_compile_definitions(yoshis_story_recomp PRIVATE YOSHI_HAVE_ASPMAIN)
 target_include_directories(yoshis_story_recomp PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/recomp_funcs"
@@ -192,8 +224,6 @@ target_include_directories(yoshis_story_recomp PRIVATE
 # Definitions that RT64's CMake sets globally must also apply to our code
 # since we include RT64's headers directly.
 target_compile_definitions(yoshis_story_recomp PRIVATE
-    PLUME_SDL_VULKAN_ENABLED
-    RT64_SDL_WINDOW_VULKAN
     # RT64 uses HLSL_CPU to enable CPU-side HLSL type definitions (interop namespace etc.)
     HLSL_CPU
     # RT64 uses FFX_GCC for the AMD FidelityFX math headers
@@ -201,7 +231,14 @@ target_compile_definitions(yoshis_story_recomp PRIVATE
     # RT64 disables the Vulkan prototypes (loaded dynamically via volk)
     IMGUI_IMPL_VULKAN_NO_PROTOTYPES
 )
-target_compile_options(yoshis_story_recomp PRIVATE -O2)
+if(NOT WIN32)
+    target_compile_definitions(yoshis_story_recomp PRIVATE PLUME_SDL_VULKAN_ENABLED RT64_SDL_WINDOW_VULKAN)
+endif()
+if(MSVC)
+    target_compile_options(yoshis_story_recomp PRIVATE $<$<NOT:$<CONFIG:Debug>>:/O2>)
+else()
+    target_compile_options(yoshis_story_recomp PRIVATE $<$<NOT:$<CONFIG:Debug>>:-O2>)
+endif()
 # Export symbols (-rdynamic) so backtrace_symbols() can name recompiled
 # game functions in crash and Fault_HungUp reports.
 set_target_properties(yoshis_story_recomp PROPERTIES ENABLE_EXPORTS ON)
@@ -221,5 +258,42 @@ target_link_libraries(yoshis_story_recomp PRIVATE
     ultramodern
     rt64
     SDL2::SDL2
-    pthread
+    Threads::Threads
 )
+
+if(WIN32)
+    # RT64 dynamically loads DXC, including when its Vulkan backend is used.
+    add_custom_command(TARGET yoshis_story_recomp POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_FILE:SDL2::SDL2>" "$<TARGET_FILE_DIR:yoshis_story_recomp>"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${RT64_PATH}/src/contrib/dxc/bin/x64/dxcompiler.dll"
+            "${RT64_PATH}/src/contrib/dxc/bin/x64/dxil.dll"
+            "$<TARGET_FILE_DIR:yoshis_story_recomp>"
+        VERBATIM)
+    install(TARGETS yoshis_story_recomp RUNTIME DESTINATION . COMPONENT Runtime)
+    install(FILES "$<TARGET_FILE:SDL2::SDL2>"
+        "${RT64_PATH}/src/contrib/dxc/bin/x64/dxcompiler.dll"
+        "${RT64_PATH}/src/contrib/dxc/bin/x64/dxil.dll" DESTINATION . COMPONENT Runtime)
+    # Create an empty data folder. Never package the source/local data folder.
+    install(DIRECTORY DESTINATION data COMPONENT Runtime)
+    install(FILES README.md THIRD_PARTY_NOTICES.md DESTINATION . COMPONENT Runtime)
+    install(DIRECTORY licenses/ DESTINATION licenses COMPONENT Runtime FILES_MATCHING PATTERN "*.txt")
+    set(CPACK_GENERATOR ZIP)
+    set(CPACK_ARCHIVE_COMPONENT_INSTALL ON)
+    set(CPACK_COMPONENTS_ALL Runtime)
+    set(CPACK_COMPONENTS_GROUPING ALL_COMPONENTS_IN_ONE)
+    set(CPACK_PACKAGE_FILE_NAME "yoshis-story-recomp-windows-x64")
+    include(CPack)
+
+    include(CTest)
+    if(BUILD_TESTING)
+        add_executable(windows_memory_test tests/windows_memory_test.cpp src/windows_memory.cpp)
+        target_include_directories(windows_memory_test PRIVATE src)
+        target_link_libraries(windows_memory_test PRIVATE onecore)
+        add_test(NAME windows_rdram_alias COMMAND windows_memory_test)
+        add_executable(game_pause_test tests/game_pause_test.cpp src/game_pause.cpp)
+        target_include_directories(game_pause_test PRIVATE src)
+        target_link_libraries(game_pause_test PRIVATE Threads::Threads)
+        add_test(NAME game_pause COMMAND game_pause_test)
+    endif()
+endif()

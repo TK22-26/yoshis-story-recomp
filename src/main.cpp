@@ -2,7 +2,6 @@
 #include <cstdlib>
 #include <cstring>
 #include <cctype>
-#include <strings.h>
 #include <string>
 #include <vector>
 #include <mutex>
@@ -13,6 +12,7 @@
 #include <memory>
 #include <filesystem>
 #include <csignal>
+#ifndef _WIN32
 #include <execinfo.h>
 #include <sys/mman.h>
 #include <sys/syscall.h>
@@ -20,10 +20,16 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <pthread.h>
+#endif
 #include <thread>
 #include <chrono>
 
 #include <SDL.h>
+#ifdef _WIN32
+#include <SDL_syswm.h>
+#include <objbase.h> // COM interfaces used by RT64's DXC headers.
+#endif
+#include "platform.h"
 
 #include <span>
 #include "librecomp/game.hpp"
@@ -34,9 +40,12 @@
 
 // RT64 renderer — must come after SDL.h so that PLUME_SDL_VULKAN_ENABLED is seen.
 #include "hle/rt64_application.h"
+#include "hle/rt64_state.h"
+#include "hle/rt64_present_queue.h"
 #include "render/rt64_render_target.h"
 
 #include "overlay.h"
+#include "game_pause.h"
 #include "launcher.h"
 
 // Pull in the generated section table from N64Recomp
@@ -58,7 +67,7 @@ extern "C" void __d_to_ull_recomp(uint8_t*, recomp_context* ctx) {
     // double → unsigned long long. The 32-bit N64 FP regs ($f12/$f13 hold the
     // double) map to ctx->f12 pair. Reinterpret and convert.
     uint64_t bits = ((uint64_t)ctx->f12.u32l) | ((uint64_t)ctx->f13.u32l << 32);
-    double d; __builtin_memcpy(&d, &bits, 8);
+    double d; std::memcpy(&d, &bits, 8);
     uint64_t r = (uint64_t)d;
     ctx->r2 = (uint32_t)(r >> 32);
     ctx->r3 = (uint32_t)(r & 0xFFFFFFFF);
@@ -193,9 +202,7 @@ extern "C" void yoshi_report_hungup(uint8_t* rdram, recomp_context* ctx) {
             vram_cstr(rdram, (uint32_t)ctx->r4).c_str(), (int32_t)ctx->r5);
     // Recompiled functions are exported (ENABLE_EXPORTS), so this names the
     // game call chain that led here.
-    void* bt[48];
-    int n = backtrace(bt, 48);
-    backtrace_symbols_fd(bt, n, fileno(stderr));
+    platform::print_backtrace();
 
     // castManager.c:161: func_80051194(id) found no loaded cast entry with that id.
     // The hook runs before Fault_HungUp's prologue, so $sp is still
@@ -360,7 +367,7 @@ std::filesystem::path g_settings_path;
 // to RT64's user configuration. Runs after setup(), which loads RT64's own
 // rt64.json and would overwrite anything set earlier. Also called from the
 // in-game overlay when the user changes a value.
-void apply_display_settings(RT64::Application* app) {
+void apply_display_settings(RT64::Application* app, bool initialize) {
     using UC = RT64::UserConfiguration;
     UC& cfg = app->userConfig;
     const UC::Antialiasing oldAA = cfg.antialiasing;
@@ -371,7 +378,7 @@ void apply_display_settings(RT64::Application* app) {
     cfg.resolutionMultiplier = g_settings.multiplier;
     // Supersampling (render larger, scale down) only applies to a fixed multiplier.
     cfg.downsampleMultiplier = std::max(1, g_settings.ssaa);
-    cfg.antialiasing = g_settings.msaa >= 8 ? UC::Antialiasing::MSAA8X
+    if (initialize) cfg.antialiasing = g_settings.msaa >= 8 ? UC::Antialiasing::MSAA8X
                      : g_settings.msaa >= 4 ? UC::Antialiasing::MSAA4X
                      : g_settings.msaa >= 2 ? UC::Antialiasing::MSAA2X
                      : UC::Antialiasing::None;
@@ -495,13 +502,17 @@ public:
     std::unique_ptr<RT64::Application> app;
     bool initialized = false;
 
-    RT64RendererContext(uint8_t* rdram, SDL_Window* window) {
+    RT64RendererContext(uint8_t* rdram, ultramodern::renderer::WindowHandle window) {
         setup_result = ultramodern::renderer::SetupResult::Success;
         chosen_api   = ultramodern::renderer::GraphicsApi::Vulkan;
 
         RT64::Application::Core core{};
-        // With RT64_SDL_WINDOW_VULKAN, RenderWindow == SDL_Window*.
+        // Windows uses RT64's native HWND backend; Linux uses SDL Vulkan.
+#ifdef _WIN32
+        core.window          = window.window;
+#else
         core.window          = window;
+#endif
         core.HEADER          = g_rom_header;
         core.RDRAM           = rdram;
         core.DMEM            = g_dmem;
@@ -538,8 +549,12 @@ public:
 
         app = std::make_unique<RT64::Application>(core, appCfg);
 
-        // setup() initializes Vulkan / the swap chain.  threadId = 0 on Linux.
+        // The window belongs to the SDL event thread, not the renderer thread.
+#ifdef _WIN32
+        auto result = app->setup(window.thread_id);
+#else
         auto result = app->setup(0);
+#endif
         if (result != RT64::Application::SetupResult::Success) {
             fprintf(stderr, "[RT64] Application::setup() failed: %d\n", (int)result);
             setup_result = ultramodern::renderer::SetupResult::GraphicsDeviceNotFound;
@@ -559,7 +574,13 @@ public:
         // grille, strength 0..1 (default off). F10 cycles it while playing.
         app->enhancementConfig.presentation.crtStrength = g_settings.crt;
         app->updateEnhancementConfig();
-        apply_display_settings(app.get());
+        apply_display_settings(app.get(), true);
+        // The launcher may have consumed SDL window ID 1. Supply the actual
+        // game window instead of relying on RT64's first-window fallback.
+        app->appWindow->sdlWindow = g_sdl_window;
+        chosen_api = app->chosenGraphicsAPI == RT64::UserConfiguration::GraphicsAPI::D3D12
+            ? ultramodern::renderer::GraphicsApi::D3D12
+            : ultramodern::renderer::GraphicsApi::Vulkan;
         overlay::attach(*app);
         initialized = true;
         fprintf(stderr, "[RT64] Application initialized\n"); fflush(stderr);
@@ -664,8 +685,20 @@ public:
             g_vi_yscale   = vi->VI_Y_SCALE_REG;
         }
 
-        app->updateScreen();
         overlay::draw(*app);
+        // Present the completed image again with fresh UI while paused. Do
+        // not replay the display list: repeated alpha blending would change
+        // the frozen picture even though the guest itself has stopped.
+        if (game_pause::is_paused() && app->state->presentId > 0) {
+            auto& queue = *app->presentQueue;
+            queue.waitForPresentId(app->state->presentId);
+            queue.waitForIdle();
+            auto& last = queue.presents[queue.previousWriteCursor()];
+            app->state->advancePresent(last, true);
+            queue.repeatLastPresent();
+        } else {
+            app->updateScreen();
+        }
     }
 
     void shutdown() override {
@@ -714,20 +747,47 @@ static ultramodern::renderer::WindowHandle create_window(void*) {
         exit(1);
     }
     set_window_icon(g_sdl_window);
+    platform::apply_window_chrome(g_sdl_window);
     fprintf(stderr, "[RECOMP] SDL window created (driver=%s)\n",
             SDL_GetCurrentVideoDriver()); fflush(stderr);
+#ifdef _WIN32
+    SDL_SysWMinfo info{};
+    SDL_VERSION(&info.version);
+    if (!SDL_GetWindowWMInfo(g_sdl_window, &info)) {
+        fprintf(stderr, "SDL_GetWindowWMInfo failed: %s\n", SDL_GetError());
+        std::exit(1);
+    }
+    return {info.info.win.window, GetCurrentThreadId()};
+#else
     return g_sdl_window;
+#endif
 }
 
 static void input_handle_event(const SDL_Event& e);
 static void input_sample();
+static std::atomic<int> g_fullscreen_request{-1};
+
+void request_fullscreen(bool fullscreen) {
+    g_fullscreen_request.store(fullscreen ? 1 : 0, std::memory_order_release);
+}
 
 static void update_gfx(void*) {
     // RT64 handles all rendering; we only need to pump SDL events here.
     SDL_Event e;
     while (SDL_PollEvent(&e)) {
-        // Overlay gets first dibs: it opens / closes on ESC / Back and, while
-        // visible, consumes any event the game would react to (acts as pause).
+        if (e.type == SDL_QUIT || (e.type == SDL_WINDOWEVENT &&
+            e.window.windowID == SDL_GetWindowID(g_sdl_window) && e.window.event == SDL_WINDOWEVENT_CLOSE))
+            std::_Exit(0);
+        // Window changes must run on this thread, outside the Inspector lock.
+        // The renderer thread can otherwise deadlock against Win32 messages.
+        if (e.type == SDL_KEYDOWN && !e.key.repeat &&
+            (e.key.keysym.scancode == SDL_SCANCODE_F11 ||
+             ((e.key.keysym.scancode == SDL_SCANCODE_RETURN || e.key.keysym.scancode == SDL_SCANCODE_KP_ENTER) &&
+              (e.key.keysym.mod & KMOD_ALT)))) {
+            request_fullscreen(!(SDL_GetWindowFlags(g_sdl_window) & SDL_WINDOW_FULLSCREEN));
+            continue;
+        }
+        // Route menu and owned-dialog events before sampling game controls.
         if (overlay::handle_event(&e)) continue;
         input_handle_event(e);
         if (e.type == SDL_KEYDOWN && e.key.keysym.scancode == SDL_SCANCODE_F9 && !e.key.repeat) {
@@ -742,30 +802,36 @@ static void update_gfx(void*) {
             g_crt_changed = true;
             fprintf(stderr, "[display] F10: CRT filter %.2f\n", crt);
         }
-        // F11 or Alt+Enter: toggle borderless fullscreen (remembered).
-        if (e.type == SDL_KEYDOWN && !e.key.repeat && g_sdl_window &&
-            (e.key.keysym.scancode == SDL_SCANCODE_F11 ||
-             ((e.key.keysym.scancode == SDL_SCANCODE_RETURN || e.key.keysym.scancode == SDL_SCANCODE_KP_ENTER) &&
-              (e.key.keysym.mod & KMOD_ALT)))) {
-            g_settings.fullscreen = !(SDL_GetWindowFlags(g_sdl_window) & SDL_WINDOW_FULLSCREEN);
-            SDL_SetWindowFullscreen(g_sdl_window, g_settings.fullscreen ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0);
-            settings_save(g_settings_path);
-        }
         if (e.type == SDL_QUIT) {
             // Use _exit to bypass C++ cleanup: ultramodern::quit() → munmap races
             // with still-running N64 threads. The kernel tears down everything safely.
-            _exit(0);
+            std::_Exit(0);
         }
     }
+    const int fullscreen = g_fullscreen_request.exchange(-1, std::memory_order_acq_rel);
+    if (fullscreen >= 0) {
+        if (SDL_SetWindowFullscreen(g_sdl_window, fullscreen ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0) != 0)
+            fprintf(stderr, "[display] Fullscreen change failed: %s\n", SDL_GetError());
+        g_settings.fullscreen = (SDL_GetWindowFlags(g_sdl_window) & SDL_WINDOW_FULLSCREEN) != 0;
+        if (!g_settings.fullscreen) platform::apply_window_chrome(g_sdl_window);
+        settings_save(g_settings_path);
+        fprintf(stderr, "[display] Window mode: %s\n", g_settings.fullscreen ? "borderless" : "windowed");
+    }
+    overlay::process_actions();
     input_sample();
 }
 
 // ---- Audio output ----------------------------------------------------
 
 SDL_AudioDeviceID g_audio_device = 0;
+static std::mutex g_audio_mutex;
 
 void audio_set_paused(bool paused) {
-    if (g_audio_device != 0) SDL_PauseAudioDevice(g_audio_device, paused ? 1 : 0);
+    std::lock_guard lock(g_audio_mutex);
+    if (g_audio_device != 0) {
+        SDL_PauseAudioDevice(g_audio_device, paused ? 1 : 0);
+        if (paused) SDL_ClearQueuedAudio(g_audio_device);
+    }
 }
 
 // Software master volume, patterned on DKR-R runtime_platform.cpp:g_master_volume.
@@ -788,6 +854,7 @@ static uint32_t g_audio_freq = 32000;
 
 // Open (or reopen) the SDL audio device at the given sample rate.
 static bool open_audio_device(uint32_t freq) {
+    std::lock_guard lock(g_audio_mutex);
     if (g_audio_device != 0) {
         SDL_CloseAudioDevice(g_audio_device);
         g_audio_device = 0;
@@ -809,7 +876,7 @@ static bool open_audio_device(uint32_t freq) {
     fprintf(stderr, "[AUDIO] opened device %u: freq=%d fmt=0x%04x ch=%d\n",
             g_audio_device, obtained.freq, obtained.format, obtained.channels);
     fflush(stderr);
-    SDL_PauseAudioDevice(g_audio_device, 0);   // start playing immediately
+    SDL_PauseAudioDevice(g_audio_device, game_pause::is_paused() ? 1 : 0);
     return true;
 }
 
@@ -821,6 +888,8 @@ static void audio_set_frequency(uint32_t freq) {
 }
 
 static void audio_queue_samples(int16_t* samples, size_t num_samples) {
+    std::lock_guard lock(g_audio_mutex);
+    if (game_pause::is_paused()) return;
     if (g_audio_device == 0 || samples == nullptr || num_samples == 0) return;
     const float vol = g_audio_muted.load(std::memory_order_relaxed)
                       ? 0.0f
@@ -838,6 +907,7 @@ static void audio_queue_samples(int16_t* samples, size_t num_samples) {
 // Stereo frames still queued for playback (what osAiGetLength reports to the
 // game, so it knows how much more audio to generate) - not the free space.
 static size_t audio_get_frames_remaining() {
+    std::lock_guard lock(g_audio_mutex);
     if (g_audio_device == 0) return 0;
     return SDL_GetQueuedAudioSize(g_audio_device) / (2 * sizeof(int16_t));
 }
@@ -901,11 +971,9 @@ static void input_sample() {
     uint16_t btn = 0;
     float x = 0.0f, y = 0.0f;
 
-    // DKR-R-style "pause": while the overlay is visible, zero the input the
-    // game sees. The game thread, audio and renderer keep running, so there
-    // is no audio/video desync; the character just stops responding. Idle
-    // animations and background music keep playing underneath.
-    if (overlay::is_visible()) {
+    // Menu navigation must never leak into game controls, including a manual
+    // pause with no menu open. Guest execution is gated separately.
+    if (overlay::is_visible() || game_pause::is_paused()) {
         std::lock_guard<std::mutex> lock(g_input_mutex);
         g_input_buttons = 0;
         g_input_x = 0.0f;
@@ -1042,6 +1110,7 @@ static void on_init(uint8_t* rdram, recomp_context* ctx) {
     constexpr uint32_t bss_size  = 0x05DFF0;
     memset(rdram + rdram_off(bss_start), 0, bss_size);
 
+#ifndef _WIN32
     // librecomp reserves 4 GB of address space but only makes the first 512 MB readable/writable.
     // N64 hardware registers (SP DMEM/IMEM, VI, AI, …) live at 0xA4xxxxxx → rdram+0x24000000.
     // The ROM cartridge is at physical 0x10000000 (kseg1: 0xB0000000) → rdram+0x30000000.
@@ -1072,6 +1141,11 @@ static void on_init(uint8_t* rdram, recomp_context* ctx) {
         fprintf(stderr, "[RECOMP] kseg1 alias of 8 MB RDRAM: %s (errno=%d)\n", ok ? "OK" : "FAILED", errno);
         fflush(stderr);
     }
+
+#else
+    // The Windows allocator establishes both shared views before startup.
+    fprintf(stderr, "[RECOMP] kseg1 alias of 8 MB RDRAM: OK (Windows shared views)\n");
+#endif
 
     // Boot-state anti-piracy check. Idle_ThreadEntry reads the first word of
     // RSP DMEM (0xA4000000) and IMEM (0xA4001000), which IPL3 leaves holding
@@ -1128,6 +1202,7 @@ static void message_box(const char* msg) {
 
 // ---- Main ------------------------------------------------------------
 
+#ifndef _WIN32
 static void crash_handler(int sig, siginfo_t* si, void*) {
     void* bt[64];
     int n = backtrace(bt, 64);
@@ -1173,12 +1248,26 @@ static void crash_handler(int sig, siginfo_t* si, void*) {
     fflush(stderr);
     _exit(1);
 }
-
-// Exported for overlay.cpp's Restart button so it can execvp our own binary.
-char* yoshi_argv0 = nullptr;
+#else
+static LONG WINAPI crash_handler(EXCEPTION_POINTERS* info) {
+    fprintf(stderr, "\n[CRASH] Windows exception 0x%08lX at %p\n",
+        info->ExceptionRecord->ExceptionCode, info->ExceptionRecord->ExceptionAddress);
+    fprintf(stderr, "[CRASH] executable base=%p, fault RVA=0x%llX\n", GetModuleHandleW(nullptr),
+        static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(info->ExceptionRecord->ExceptionAddress)
+            - reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr))));
+    platform::print_backtrace();
+    fflush(stderr);
+    return EXCEPTION_EXECUTE_HANDLER;
+}
+#endif
 
 int main(int argc, char** argv) {
-    yoshi_argv0 = argv && argv[0] ? argv[0] : nullptr;
+#ifdef SDL_MAIN_HANDLED
+    SDL_SetMainReady();
+#endif
+#ifdef _WIN32
+    SetUnhandledExceptionFilter(crash_handler);
+#else
     struct sigaction sa{};
     sa.sa_sigaction = crash_handler;
     sa.sa_flags = SA_SIGINFO;
@@ -1201,13 +1290,14 @@ int main(int argc, char** argv) {
         su.sa_flags = SA_SIGINFO;
         sigaction(SIGUSR1, &su, nullptr);
     }
+#endif
 
     // Watchdog: YOSHI_WATCH_ADDRS=0x800C8900,... logs every change to those
     // RDRAM words (VRAM addresses, e.g. an actor's +0x20 proc). Polling
     // (100us) can miss values that change back within one interval.
     if (getenv("YOSHI_WATCH_ADDRS")) std::thread([]{
-        pthread_setname_np(pthread_self(), "rdram watch");
-        while (!g_rdram) { usleep(1000); }
+        ultramodern::set_native_thread_name("rdram watch");
+        while (!g_rdram) { std::this_thread::sleep_for(std::chrono::milliseconds(1)); }
         struct Field { std::string name; uint32_t vram; uint32_t last; };
         std::vector<Field> fields;
         if (const char* list = getenv("YOSHI_WATCH_ADDRS")) {
@@ -1235,7 +1325,7 @@ int main(int argc, char** argv) {
                 fflush(stderr);
                 f.last = v;
             }
-            usleep(100);
+            std::this_thread::sleep_for(std::chrono::microseconds(100));
         }
     }).detach();
 
@@ -1247,6 +1337,9 @@ int main(int argc, char** argv) {
     SDL_SetHint("SDL_VIDEO_WAYLAND_WMCLASS", "yoshis-story-recomp");
     SDL_SetHint("SDL_VIDEO_X11_WMCLASS", "yoshis-story-recomp");
     SDL_SetHint("SDL_APP_NAME", "Yoshi's Story Recomp");
+#ifdef _WIN32
+    SDL_SetHint(SDL_HINT_WINDOWS_DPI_AWARENESS, "permonitorv2");
+#endif
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_GAMECONTROLLER) != 0) {
         fprintf(stderr, "SDL_Init failed: %s\n", SDL_GetError());
         return 1;
@@ -1288,13 +1381,12 @@ int main(int argc, char** argv) {
     // Data folder (ROM at yoshis_story.z64, saves, settings.ini, mods.json):
     //   YOSHI_DATA_DIR if set, else data/ next to the executable (a flat
     //   portable folder), else ../data from it (this repo's build/ + data/).
-    // The executable's real location comes from /proc/self/exe, so symlinks,
+    // Resolve the executable with the platform API, so symlinks,
     // PATH lookups and any working directory all resolve the same way.
     std::filesystem::path exe_dir;
     {
-        std::error_code ec;
-        std::filesystem::path exe = std::filesystem::read_symlink("/proc/self/exe", ec);
-        exe_dir = ec ? std::filesystem::absolute(argv[0]).parent_path() : exe.parent_path();
+        const auto exe = platform::executable_path();
+        exe_dir = exe.empty() ? std::filesystem::absolute(argv[0]).parent_path() : exe.parent_path();
     }
     std::filesystem::path data_path;
     if (const char* dir = getenv("YOSHI_DATA_DIR"); dir && dir[0]) {
@@ -1309,9 +1401,9 @@ int main(int argc, char** argv) {
         std::error_code ec;
         std::filesystem::create_directories(config_path, ec);
     }
-    fprintf(stderr, "[RECOMP] config_path = %s\n", config_path.c_str()); fflush(stderr);
+    fprintf(stderr, "[RECOMP] config_path = %s\n", config_path.string().c_str()); fflush(stderr);
     fprintf(stderr, "[RECOMP] ROM path = %s (exists=%d)\n",
-        (config_path / "yoshis_story.z64").c_str(),
+        (config_path / "yoshis_story.z64").string().c_str(),
         (int)std::filesystem::exists(config_path / "yoshis_story.z64")); fflush(stderr);
     recomp::register_config_path(config_path);
 

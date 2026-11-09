@@ -1,4 +1,4 @@
-// In-game settings overlay. See docs/OVERLAY_PLAN.md for the design.
+// Desktop top menu and in-game settings, following the JFG launcher layout.
 //
 // Pattern copied from ThatGuyMcd/DKR-R runtime_ui.cpp attach/detach/draw: we
 // construct our own RT64::Inspector, install it in app.presentQueue->inspector,
@@ -7,13 +7,15 @@
 // we keep off, so we have exclusive ownership of its ImGui frame.
 
 #include "overlay.h"
+#include "game_pause.h"
 
 #include <algorithm>
 #include <atomic>
 #include <cmath>
 #include <mutex>
 
-#include <unistd.h>   // execvp for the Restart button
+#include <cstdlib>
+#include "platform.h"
 
 #include <SDL.h>
 #include "imgui.h"
@@ -28,10 +30,9 @@
 #include "gui/rt64_inspector.h"
 
 #include "launcher.h"
-
-// Defined in main.cpp; argv[0] of the process so we can execvp ourselves on
-// Restart. Nullable before main() runs.
-extern char* yoshi_argv0;
+#include "ui_style.h"
+#include "imgui/imgui_impl_sdl2_custom.h"
+#include "backends/imgui_impl_sdlrenderer2.h"
 
 namespace {
 
@@ -39,50 +40,36 @@ std::atomic<bool> g_visible{false};
 std::mutex g_attach_mutex;
 bool g_attached = false;
 RT64::Application* g_app = nullptr;   // only valid while g_attached is true
-ImFont* g_overlay_font = nullptr;     // bigger font added to the atlas on attach
+ui::Fonts g_menu_fonts;
+ui::Fonts g_dialog_fonts;
+float g_menu_scale = 1.0f;
 
 // DKR-R-style capture state for button rebinding in the Controls tab.
 // When CaptureTarget != None, handle_event() intercepts the next key/button.
 enum class CaptureTarget { None, Keyboard, Controller };
 CaptureTarget g_capture_target = CaptureTarget::None;
 int g_capture_action_idx = -1;
-// Window size the user last resized the overlay to, in pixels. 0 = use default.
-// Persists for the life of the process; reset at each attach().
-ImVec2 g_overlay_size{0, 0};
-
-// MSAA cannot be changed live: app->updateMultisampling() tears down and
-// recreates GPU resources and crashes mid-frame. We keep the chosen value
-// here, write it to settings.ini, and show a "takes effect next launch"
-// note. g_settings.msaa stays at the booted-with value.
-int g_pending_msaa = -1;   // -1 = unset / matches boot MSAA
-
-enum class SideItem {
-    Display = 0,
-    Audio,
-    Controls,
-    Saves,
-    TexturePacks,
-    Mods,
-    HudLayout,
-    About,
-    Count
-};
-// Current page shown in the content panel.
-int g_active = int(SideItem::Display);
-// Sidebar cursor for gamepad navigation: 0..Count-1 is a page, Count is
-// RESTART, Count+1 is EXIT. Shoulder buttons cycle this; A activates
-// RESTART/EXIT. Mouse clicks on page buttons also move the cursor so the
-// orange highlight follows. Pattern copied from DKR-R runtime_ui.cpp:9701+.
-int g_sidebar_cursor = 0;
-constexpr int kSlotRestart = int(SideItem::Count);
-constexpr int kSlotExit    = int(SideItem::Count) + 1;
-constexpr int kSidebarSlots = kSlotExit + 1;
-// Request to re-focus the content panel: set on open and after a shoulder
-// cycle. Consumed by the next draw via SetKeyboardFocusHere().
+// Only implemented settings appear in the menu.
+enum class Page { Display, Audio, Controls, About, Count };
+int g_active = int(Page::Display); // Main-thread dialog state
+int g_pending_msaa = -1;
 std::atomic<bool> g_focus_content{false};
-// Deferred action requested by A on RESTART/EXIT: handled on next draw so
-// execvp / exit run outside the SDL event callback.
-std::atomic<int> g_sidebar_action{0};   // 0 none, 1 restart, 2 exit
+std::atomic<bool> g_menu_open{false};
+std::atomic<float> g_menu_height{24.0f};
+std::atomic<int> g_page_request{-1};
+std::atomic<bool> g_dialog_close{false};
+SDL_Window* g_dialog_window = nullptr;
+SDL_Renderer* g_dialog_renderer = nullptr;
+ImGuiContext* g_game_context = nullptr;
+ImGuiContext* g_dialog_context = nullptr;
+Uint64 g_dialog_last_frame = 0;
+struct ScopedContext {
+    ImGuiContext* previous = ImGui::GetCurrentContext();
+    explicit ScopedContext(ImGuiContext* context) { ImGui::SetCurrentContext(context); }
+    ~ScopedContext() { ImGui::SetCurrentContext(previous); }
+};
+std::atomic<int> g_menu_action{0}; // restart, exit, data folder, save folder, pause
+bool g_manual_pause = false; // main thread only
 
 constexpr double kMultipliers[] = { 2, 3, 4, 5, 6, 8, 10 };
 constexpr int kMultiplierCount = int(sizeof(kMultipliers) / sizeof(kMultipliers[0]));
@@ -150,24 +137,23 @@ void help_tip(const char* text) {
 }
 
 void heading(const char* text) {
-    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.00f, 0.60f, 0.15f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_CheckMark));
     ImGui::TextUnformatted(text);
     ImGui::PopStyleColor();
     ImGui::Separator();
     ImGui::Spacing();
 }
 
-// Field label (uppercase yellow), full-width widget below it, then an optional
-// description line in dim white under the widget. Mimics the DKR-R layout.
+// Compact labels and wrapped descriptions share the launcher palette.
 void field_label(const char* text) {
     ImGui::Spacing();
-    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.80f, 0.20f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_Text));
     ImGui::TextUnformatted(text);
     ImGui::PopStyleColor();
 }
 
 void field_desc(const char* text) {
-    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.75f, 0.80f, 0.90f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
     ImGui::TextWrapped("%s", text);
     ImGui::PopStyleColor();
 }
@@ -196,11 +182,11 @@ static const char* button_name(int btn) {
 }
 
 void draw_controls_tab() {
-    heading("CONTROLS");
+    heading("Controller mapping");
     ImGui::PushItemWidth(-1.0f);
 
     // --- Device ---
-    field_label("CONTROLLER");
+    field_label("Controller");
     const char* cname = input_current_controller_name();
     if (cname) {
         ImGui::TextUnformatted(cname);
@@ -210,7 +196,7 @@ void draw_controls_tab() {
     ImGui::Spacing();
 
     // --- Stick ---
-    field_label("DEADZONE");
+    field_label("Stick deadzone");
     ImGui::SliderFloat("##dz", &g_settings.bindings.deadzone, 0.0f, 0.5f, "%.2f");
     field_desc("Minimum stick deflection registered as movement. Default: 0.15.");
 
@@ -264,7 +250,7 @@ void draw_controls_tab() {
             ImGuiTableFlags_SizingStretchSame)) {
         ImGui::TableSetupColumn("N64 BUTTON", ImGuiTableColumnFlags_WidthStretch, 1.0f);
         ImGui::TableSetupColumn("KEYBOARD",   ImGuiTableColumnFlags_WidthStretch, 1.5f);
-        ImGui::TableSetupColumn("CONTROLLER", ImGuiTableColumnFlags_WidthStretch, 1.5f);
+        ImGui::TableSetupColumn("Controller", ImGuiTableColumnFlags_WidthStretch, 1.5f);
         ImGui::TableHeadersRow();
 
         for (int i = 0; i < int(N64Action::Count); i++) {
@@ -344,7 +330,7 @@ void draw_controls_tab() {
 }
 
 void draw_audio_tab() {
-    heading("AUDIO");
+    heading("Audio");
     ImGui::PushItemWidth(-1.0f);
 
     // Work in 0..100 so SliderFloat can use "%.0f%%" as a live printf format.
@@ -353,7 +339,7 @@ void draw_audio_tab() {
     float volPct = audio_get_volume() * 100.0f;
     bool muted   = audio_get_muted();
 
-    field_label("MASTER VOLUME");
+    field_label("Master volume");
     const float muteW  = ImGui::GetFontSize() * 4.5f;
     const float spacing = ImGui::GetStyle().ItemSpacing.x;
     ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - muteW - spacing);
@@ -368,111 +354,70 @@ void draw_audio_tab() {
     }
 
     ImGui::Spacing();
-    field_label("ABOUT AUDIO");
-    field_desc("Yoshi's Story mixes music, effects and voice together inside "
-               "the N64 audio microcode (aspMain) before the samples reach us. "
-               "There is no separate per-channel split to expose, so Master "
-               "Volume is the only control available.");
+    field_desc("Music, effects and voices share one volume control.");
 
     ImGui::PopItemWidth();
 }
 
 void draw_display_tab() {
-    heading("DISPLAY");
     YoshiSettings& s = g_settings;
-    YoshiSettings before = s;
-
-    ImGui::PushItemWidth(-1.0f);   // full-width widgets like the DKR-R ref
-
-    static const char* const resNames[] = {
-        "Native (320x240)", "Fit window", "2x (640x480)", "3x (960x720)",
-        "4x (1280x960)", "5x (1600x1200)", "6x (1920x1440)", "8x (2560x1920)",
-        "10x (3200x2400)" };
-    int resIndex = resolution_index(s);
-    field_label("INTERNAL RESOLUTION");
-    if (ImGui::Combo("##resolution", &resIndex, resNames, IM_ARRAYSIZE(resNames))) {
-        set_resolution_index(s, resIndex);
-        // Native has no internal buffer to supersample; reset SSAA to Off.
-        if (s.resolution == YoshiSettings::Native) s.ssaa = 1;
+    const YoshiSettings before = s;
+    if (ImGui::BeginTable("##video", 2, ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_PadOuterX)) {
+        ImGui::TableSetupColumn("Setting", ImGuiTableColumnFlags_WidthFixed, 160.0f * platform::window_scale(g_dialog_window));
+        ImGui::TableSetupColumn("Value", ImGuiTableColumnFlags_WidthStretch);
+        auto row = [](const char* label, const char* help) {
+            ImGui::TableNextRow(0, 44.0f * platform::window_scale(g_dialog_window));
+            ImGui::TableSetColumnIndex(0);
+            ImGui::AlignTextToFramePadding();
+            ImGui::TextUnformatted(label);
+            help_tip(help);
+            ImGui::TableSetColumnIndex(1);
+            ImGui::SetNextItemWidth(-1);
+        };
+        static const char* resNames[] = {"Native (320 x 240)", "Fit window", "2x (640 x 480)",
+            "3x (960 x 720)", "4x (1280 x 960)", "5x (1600 x 1200)",
+            "6x (1920 x 1440)", "8x (2560 x 1920)", "10x (3200 x 2400)"};
+        int res = resolution_index(s);
+        row("Resolution", "Fit window chooses the largest whole multiple of 240 lines that fits.");
+        if (ImGui::Combo("##resolution", &res, resNames, IM_ARRAYSIZE(resNames))) {
+            set_resolution_index(s, res);
+            if (s.resolution == YoshiSettings::Native) s.ssaa = 1;
+        }
+        const char* ssaaNames[] = {"Off", "2x", "3x", "4x", "5x"};
+        int ssaa = std::clamp(s.ssaa, 1, 5) - 1;
+        row("Supersampling", "Renders at a larger size and reduces it for smoother edges. Requires a fixed resolution.");
+        ImGui::BeginDisabled(s.resolution != YoshiSettings::Manual);
+        if (ImGui::Combo("##ssaa", &ssaa, ssaaNames, IM_ARRAYSIZE(ssaaNames))) s.ssaa = ssaa + 1;
+        ImGui::EndDisabled();
+        const char* msaaNames[] = {"Off", "2x", "4x", "8x"};
+        int pending = g_pending_msaa < 0 ? s.msaa : g_pending_msaa;
+        int msaa = pending >= 8 ? 3 : pending >= 4 ? 2 : pending >= 2 ? 1 : 0;
+        row("Anti-aliasing", "Smooths polygon edges. Changes apply after restarting the game.");
+        if (ImGui::Combo("##msaa", &msaa, msaaNames, IM_ARRAYSIZE(msaaNames)))
+            g_pending_msaa = msaa == 0 ? 0 : 1 << msaa;
+        const char* upNames[] = {"Original", "Scaled only", "All"};
+        row("Upscale 2D", "Choose which sprites and backgrounds use the higher rendering resolution.");
+        ImGui::Combo("##upscale", &s.upscale2D, upNames, IM_ARRAYSIZE(upNames));
+        const char* filters[] = {"Nearest", "Linear", "Pixel scaling"};
+        row("Output filter", "Controls how the image is scaled to the window.");
+        ImGui::Combo("##filter", &s.filter, filters, IM_ARRAYSIZE(filters));
+        row("CRT filter", "Adds scanlines and a color mask. F10 cycles the strength.");
+        ImGui::SliderFloat("##crt", &s.crt, 0, 1, s.crt <= 0 ? "Off" : "%.2f");
+        row("Overscan crop", "Hides pixels at each edge, like a TV. Two pixels is the default.");
+        ImGui::SliderInt("##crop", &s.crop, 0, 8, "%d px");
+        row("Window mode", "F11 or Alt+Enter also switches between windowed and borderless fullscreen.");
+        if (ImGui::Checkbox("Borderless fullscreen", &s.fullscreen)) request_fullscreen(s.fullscreen);
+        ImGui::EndTable();
     }
-    field_desc("Native is the console's own 320x240. Fit window picks the largest "
-               "whole multiple of 240 lines. 2x-8x is a fixed size and enables supersampling.");
-
-    const bool manual = s.resolution == YoshiSettings::Manual;
-    static const char* const ssaaNames[] = { "Off", "2x", "3x", "4x", "5x" };
-    int ssaaIndex = std::clamp(s.ssaa, 1, 5) - 1;
-    field_label("SUPERSAMPLING");
-    ImGui::BeginDisabled(!manual);
-    if (ImGui::Combo("##ssaa", &ssaaIndex, ssaaNames, IM_ARRAYSIZE(ssaaNames))) s.ssaa = ssaaIndex + 1;
-    ImGui::EndDisabled();
-    field_desc("Draws the game N times larger again, then shrinks it back down. "
-               "Smooths edges but costs 4x / 9x / 16x the pixels. Fixed resolution only.");
-
-    static const char* const msaaNames[] = { "Off", "MSAA 2x", "MSAA 4x", "MSAA 8x" };
-    int msaaPending = (g_pending_msaa < 0 ? s.msaa : g_pending_msaa);
-    int msaaIndex = msaaPending >= 8 ? 3 : msaaPending >= 4 ? 2 : msaaPending >= 2 ? 1 : 0;
-    field_label("ANTI-ALIASING");
-    if (ImGui::Combo("##msaa", &msaaIndex, msaaNames, IM_ARRAYSIZE(msaaNames))) {
-        g_pending_msaa = msaaIndex == 0 ? 0 : (1 << msaaIndex);
-    }
-    field_desc("Smooths 3D polygon edges. Yoshi is mostly 2D so expect little visible change. "
-               "RT64 cannot swap sample counts live, so this takes effect at next launch.");
-    if (g_pending_msaa >= 0 && g_pending_msaa != s.msaa) {
-        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.65f, 0.20f, 1.0f));
-        ImGui::TextUnformatted("Restart required to apply the new MSAA setting.");
-        ImGui::PopStyleColor();
-    }
-
-    static const char* const up2dNames[] = { "Original", "Scaled only", "All" };
-    field_label("UPSCALE 2D");
-    ImGui::Combo("##up2d", &s.upscale2D, up2dNames, IM_ARRAYSIZE(up2dNames));
-    field_desc("Which 2D sprites and backgrounds are drawn at the high resolution. "
-               "Original is blocky but never seams; Scaled only is the default.");
-
-    static const char* const filterNames[] = { "Nearest", "Linear", "Pixel scaling" };
-    field_label("OUTPUT FILTER");
-    ImGui::Combo("##filter", &s.filter, filterNames, IM_ARRAYSIZE(filterNames));
-    field_desc("How the final picture is stretched to fit the window. Pixel scaling is recommended.");
-
-    field_label("CRT FILTER");
-    ImGui::SliderFloat("##crt", &s.crt, 0.0f, 1.0f, s.crt <= 0.0f ? "Off" : "%.2f");
-    field_desc("Dark gaps between scanlines plus an aperture grille. Needs a tall window; "
-               "fades out below ~3 window pixels per native line. F10 cycles off / 0.25 / 0.5 / 1.0.");
-
-    field_label("OVERSCAN CROP (PIXELS)");
-    ImGui::SliderInt("##crop", &s.crop, 0, 8);
-    field_desc("Hides this many framebuffer pixels along each edge, like a TV. 2 is recommended.");
-
-    field_label("WINDOW MODE");
-    ImGui::Checkbox("Borderless fullscreen", &s.fullscreen);
-    field_desc("F11 or Alt+Enter also toggles fullscreen while playing.");
-
-    ImGui::PopItemWidth();
-
-    // Live-apply only non-MSAA changes.
-    const bool displayTouched =
-        before.resolution != s.resolution || before.multiplier != s.multiplier ||
-        before.ssaa != s.ssaa ||
-        before.upscale2D != s.upscale2D || before.filter != s.filter;
-    if (displayTouched && g_app != nullptr) {
+    if (g_pending_msaa >= 0 && g_pending_msaa != s.msaa)
+        ImGui::TextColored(ImVec4(1, .70f, .24f, 1), "Anti-aliasing will change after restarting.");
+    if ((before.resolution != s.resolution || before.multiplier != s.multiplier ||
+         before.ssaa != s.ssaa || before.upscale2D != s.upscale2D || before.filter != s.filter) && g_app)
         apply_display_settings(g_app);
-    }
-    if (before.crt != s.crt && g_app != nullptr) {
+    if (before.crt != s.crt && g_app) {
         g_app->enhancementConfig.presentation.crtStrength = s.crt;
         g_app->updateEnhancementConfig();
     }
-    if (before.fullscreen != s.fullscreen && g_sdl_window != nullptr) {
-        SDL_SetWindowFullscreen(g_sdl_window, s.fullscreen ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0);
-    }
-}
-
-void draw_placeholder_tab(const char* label, const char* detail) {
-    heading(label);
-    ImGui::TextDisabled("Coming soon");
-    ImGui::Spacing();
-    ImGui::TextWrapped("%s", detail);
-    ImGui::Spacing();
-    ImGui::TextDisabled("Tracked in docs/OVERLAY_PLAN.md.");
 }
 
 void draw_about_tab() {
@@ -480,22 +425,19 @@ void draw_about_tab() {
     ImGui::TextUnformatted("Yoshi's Story Recomp");
     ImGui::TextDisabled("Native static recompilation using N64Recomp + RT64");
     ImGui::Spacing();
-    ImGui::BulletText("Repo: github.com/damobeanrod/yoshis-story-recomp");
+    ImGui::BulletText("Windows fork: github.com/TK22-26/yoshis-story-recomp");
+    ImGui::BulletText("Original port: github.com/damobeanrod/yoshis-story-recomp");
     ImGui::BulletText("RT64 submodule: github.com/rt64/rt64");
     ImGui::BulletText("N64ModernRuntime: github.com/N64Recomp/N64ModernRuntime");
     ImGui::Spacing();
 
-    heading("RT64 patches applied in this build");
-    ImGui::BulletText("0001 - S2DEX GBI1 object sprite commands");
-    ImGui::BulletText("0003 - CRT filter in VI shader");
-    ImGui::BulletText("0004 - S2DEX upscale strip heuristic (local)");
-    ImGui::Spacing();
 
     heading("In-game shortcuts");
-    ImGui::BulletText("Esc / F1 / Controller Back - toggle this overlay");
+    ImGui::BulletText("Esc / F1 / Controller Back - open or close settings");
     ImGui::BulletText("F10 - cycle CRT filter (off / 0.25 / 0.5 / 1.0)");
     ImGui::BulletText("F11 or Alt+Enter - toggle fullscreen");
-    ImGui::BulletText("F9 - dump the next display list to stderr");
+    ImGui::BulletText("Pause - pause or resume the game");
+    ImGui::BulletText("Ctrl+M - mute or unmute");
     ImGui::Spacing();
 
     heading("Credits");
@@ -529,199 +471,222 @@ void draw_about_tab() {
 }
 
 void restart_game() {
-    // Relaunch via execvp. SDL and our threads are torn down by exec.
-    // Fallback: _exit(0) so the user can relaunch manually.
-    char* argv[2] = { yoshi_argv0, nullptr };
-    const char* path = yoshi_argv0 ? yoshi_argv0 : "yoshis_story_recomp";
-    execvp(path, argv);
-    fprintf(stderr, "[overlay] execvp failed, exiting instead\n");
-    _exit(0);
+    if (!platform::restart()) {
+        fprintf(stderr, "[overlay] restart failed; keeping the current game open\n");
+        return;
+    }
+    std::_Exit(0);
 }
 
-void draw_sidebar(const ImVec2& area) {
-    // Patterned on DKR-R runtime_ui.cpp:9472+: the sidebar child is NavFlattened
-    // and its buttons carry ImGuiItemFlags_NoNav, so the D-pad / stick cannot
-    // move focus into it. Shoulder buttons own this rail (see handle_event).
-    ImGui::BeginChild("##sidebar", area, true,
-        ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NavFlattened);
-    ImGui::PushItemFlag(ImGuiItemFlags_NoNav, true);
+void open_page(Page page) {
+    g_page_request.store(int(page), std::memory_order_release);
+    g_visible.store(true, std::memory_order_release);
+    g_focus_content.store(true, std::memory_order_release);
+}
 
-    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.80f, 0.20f, 1.0f));
-    ImGui::TextUnformatted("YOSHI'S STORY");
-    ImGui::TextUnformatted("RECOMPILED");
-    ImGui::PopStyleColor();
-    ImGui::Separator();
-    ImGui::Spacing();
+bool begin_desktop_menu(const char* label) {
+    ImGui::SetNextWindowSizeConstraints(ImVec2(252 * g_menu_scale, 0), ImVec2(252 * g_menu_scale, FLT_MAX));
+    const bool open = ImGui::BeginMenu(label);
+    if (open) ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing,
+        ImVec2(20 * g_menu_scale, 26 * g_menu_scale - ImGui::GetFontSize()));
+    return open;
+}
+void end_desktop_menu() {
+    ImGui::PopStyleVar();
+    ImGui::EndMenu();
+}
 
-    static const char* const items[] = {
-        "DISPLAY", "AUDIO", "CONTROLS", "SAVE MANAGER",
-        "TEXTURE PACKS", "MODS / HACKS", "HUD LAYOUT", "ABOUT",
-    };
-    const ImVec4 activeBg      = ImVec4(0.95f, 0.35f, 0.10f, 1.00f);
-    const ImVec4 activeBgHov   = ImVec4(1.00f, 0.42f, 0.15f, 1.00f);
-    const ImVec4 inactiveBg    = ImVec4(0.15f, 0.22f, 0.38f, 1.00f);
-    const ImVec4 inactiveBgHov = ImVec4(0.22f, 0.32f, 0.52f, 1.00f);
-    const ImVec4 restartBg     = ImVec4(0.95f, 0.52f, 0.10f, 1.00f);
-    const ImVec4 restartBgHov  = ImVec4(1.00f, 0.60f, 0.15f, 1.00f);
-    const ImVec4 restartBgHot  = ImVec4(1.00f, 0.72f, 0.20f, 1.00f);
-    const ImVec4 exitBg        = ImVec4(0.90f, 0.20f, 0.12f, 1.00f);
-    const ImVec4 exitBgHov     = ImVec4(1.00f, 0.28f, 0.18f, 1.00f);
-    const ImVec4 exitBgHot     = ImVec4(1.00f, 0.42f, 0.28f, 1.00f);
-
-    const float buttonW = ImGui::GetContentRegionAvail().x;
-    const float buttonH = ImGui::GetFontSize() * 2.1f;
-
-    for (int i = 0; i < int(SideItem::Count); i++) {
-        const bool active = (i == g_active);
-        // The cursor and active page are the same for page slots; mouse click
-        // sets both so the highlight follows a click as well as a shoulder cycle.
-        ImGui::PushStyleColor(ImGuiCol_Button, active ? activeBg : inactiveBg);
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, active ? activeBgHov : inactiveBgHov);
-        ImGui::PushStyleColor(ImGuiCol_ButtonActive, activeBg);
-        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1, 1, 1, 1));
-        if (ImGui::Button(items[i], ImVec2(buttonW, buttonH))) {
-            g_active = i;
-            g_sidebar_cursor = i;
-            g_focus_content.store(true, std::memory_order_release);
+void draw_menu_bar() {
+    if (g_settings.fullscreen && !g_visible.load() && !g_menu_open.load() && !game_pause::is_paused()) return;
+    const float scale = g_menu_scale;
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(10 * scale, (24 * scale - ImGui::GetFontSize()) / 2));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(15 * scale, 6 * scale));
+    // BeginMenu adds spacing on both sides of a heading.
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(10 * scale, 24 * scale - ImGui::GetFontSize()));
+    if (ImGui::BeginMainMenuBar()) {
+        g_menu_height.store(ImGui::GetWindowHeight());
+        ImGui::SetCursorPosX(4 * scale);
+        if (begin_desktop_menu("Game")) {
+            if (ImGui::MenuItem(game_pause::is_paused() ? "Resume game" : "Pause game", "Pause"))
+                g_menu_action.store(5);
+            if (ImGui::MenuItem("Restart game")) g_menu_action.store(1);
+            ImGui::Separator();
+            if (ImGui::MenuItem("Quit")) g_menu_action.store(2);
+            end_desktop_menu();
         }
-        ImGui::PopStyleColor(4);
-        ImGui::Spacing();
+        if (begin_desktop_menu("Controllers")) {
+            if (ImGui::MenuItem("Controller mapping...")) open_page(Page::Controls);
+            end_desktop_menu();
+        }
+        if (begin_desktop_menu("Video")) {
+            if (ImGui::MenuItem("Video settings...")) open_page(Page::Display);
+            if (ImGui::MenuItem("Borderless fullscreen", "F11", g_settings.fullscreen))
+                request_fullscreen(!g_settings.fullscreen);
+            end_desktop_menu();
+        }
+        if (begin_desktop_menu("Audio")) {
+            if (ImGui::MenuItem("Audio settings...")) open_page(Page::Audio);
+            if (ImGui::MenuItem("Mute", "Ctrl+M", audio_get_muted())) {
+                audio_set_muted(!audio_get_muted());
+                settings_save(g_settings_path);
+            }
+            end_desktop_menu();
+        }
+        if (begin_desktop_menu("Tools")) {
+            if (ImGui::MenuItem("Open data folder")) g_menu_action.store(3);
+            if (ImGui::MenuItem("Open save folder")) g_menu_action.store(4);
+            end_desktop_menu();
+        }
+        if (begin_desktop_menu("Help")) {
+            if (ImGui::MenuItem("About Yoshi's Story...")) open_page(Page::About);
+            end_desktop_menu();
+        }
+        const char* hint = game_pause::is_paused() ? "Paused    |    F1  Settings" : "F1  Settings";
+        const float hintX = ImGui::GetWindowWidth() - ImGui::CalcTextSize(hint).x - 20;
+        if (hintX > ImGui::GetCursorPosX() + 20) {
+            ImGui::SetCursorPosX(hintX);
+            ImGui::TextDisabled("%s", hint);
+        }
+        ImGui::EndMainMenuBar();
     }
-
-    // Spacer, then Restart + Exit at the bottom, DKR-R style.
-    const float remaining = ImGui::GetContentRegionAvail().y;
-    const float footerH = (buttonH + ImGui::GetStyle().ItemSpacing.y) * 2;
-    if (remaining > footerH) ImGui::Dummy(ImVec2(1, remaining - footerH));
-
-    const bool restartHot = (g_sidebar_cursor == kSlotRestart);
-    ImGui::PushStyleColor(ImGuiCol_Button,        restartHot ? restartBgHot : restartBg);
-    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, restartBgHov);
-    ImGui::PushStyleColor(ImGuiCol_ButtonActive,  restartBg);
-    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1, 1, 1, 1));
-    if (ImGui::Button("RESTART", ImVec2(buttonW, buttonH))) {
-        g_sidebar_action.store(1, std::memory_order_release);
-    }
-    ImGui::PopStyleColor(4);
-    ImGui::Spacing();
-
-    const bool exitHot = (g_sidebar_cursor == kSlotExit);
-    ImGui::PushStyleColor(ImGuiCol_Button,        exitHot ? exitBgHot : exitBg);
-    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, exitBgHov);
-    ImGui::PushStyleColor(ImGuiCol_ButtonActive,  exitBg);
-    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1, 1, 1, 1));
-    if (ImGui::Button("EXIT", ImVec2(buttonW, buttonH))) {
-        g_sidebar_action.store(2, std::memory_order_release);
-    }
-    ImGui::PopStyleColor(4);
-
-    ImGui::PopItemFlag();
-    ImGui::EndChild();
+    ImGui::PopStyleVar(3);
 }
 
-void draw_content(const ImVec2& area) {
-    ImGui::BeginChild("##content", area, true, ImGuiWindowFlags_NavFlattened);
+const char* page_title() {
+    static const char* titles[] = {"Video settings - Yoshi's Story", "Audio settings - Yoshi's Story",
+        "Controller mapping - Yoshi's Story", "About Yoshi's Story"};
+    return titles[g_active];
+}
 
-    // Top-right hint and close affordance.
-    const char* hint = "LB / RB tabs \xC2\xB7 B closes \xC2\xB7 Esc / F1 / Back";
-    const float hintW = ImGui::CalcTextSize(hint).x;
-    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.65f, 0.70f, 0.78f, 1.0f));
-    ImGui::SetCursorPosX(ImGui::GetContentRegionAvail().x + ImGui::GetCursorPosX() - hintW);
-    ImGui::TextUnformatted(hint);
-    ImGui::PopStyleColor();
-    ImGui::Spacing();
-
-    // When the overlay opens or the user cycles the sidebar, drop focus into
-    // the content panel so the D-pad drives the widgets, not the sidebar.
-    if (g_focus_content.exchange(false, std::memory_order_acq_rel)) {
-        ImGui::SetKeyboardFocusHere();
-    }
-
-    switch (SideItem(g_active)) {
-        case SideItem::Display: draw_display_tab(); break;
-        case SideItem::Audio: draw_audio_tab(); break;
-        case SideItem::Controls: draw_controls_tab(); break;
-        case SideItem::Saves:
-            draw_placeholder_tab("Save Manager",
-                "Backup, restore and rename yoshis_story.bin. Portable-mode "
-                "toggle. The save file already lives in data/saves/ and this "
-                "tab will manage it.");
-            break;
-        case SideItem::TexturePacks:
-            draw_placeholder_tab("Texture Packs",
-                "Install and prioritise texture replacement packs. RT64 ships "
-                "the replacement engine; this tab will expose a folder picker "
-                "and priority list.");
-            break;
-        case SideItem::Mods:
-            draw_placeholder_tab("Mods / Hacks",
-                "Enable / disable mods declared in data/mods.json. The file "
-                "exists but nothing is authored yet; this tab lands when the "
-                "first mod ships.");
-            break;
-        case SideItem::HudLayout:
-            draw_placeholder_tab("HUD Layout",
-                "Reposition the HUD elements per aspect ratio. Low-priority "
-                "but kept visible so the roadmap is clear.");
-            break;
-        case SideItem::About: draw_about_tab(); break;
+void draw_settings_contents() {
+    ImGui::SetNextWindowPos(ImVec2(0, 0));
+    ImGui::SetNextWindowSize(ImGui::GetIO().DisplaySize);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0);
+    ImGui::Begin("##native-settings", nullptr, ImGuiWindowFlags_NoDecoration |
+        ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings);
+    const float scale = platform::window_scale(g_dialog_window);
+    const float footer = ImGui::GetFrameHeightWithSpacing() + 10 * scale;
+    ImGui::BeginChild("##settings-content", ImVec2(0, -footer), false, ImGuiWindowFlags_NavFlattened);
+    if (g_focus_content.exchange(false)) ImGui::SetKeyboardFocusHere();
+    switch (Page(g_active)) {
+        case Page::Display: draw_display_tab(); break;
+        case Page::Audio: draw_audio_tab(); break;
+        case Page::Controls: draw_controls_tab(); break;
+        case Page::About: draw_about_tab(); break;
         default: break;
     }
     ImGui::EndChild();
+    ImGui::Separator();
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextDisabled("LB / RB: settings    B / Esc: close");
+    ImGui::SameLine(ImGui::GetWindowWidth() - ImGui::GetStyle().WindowPadding.x - 90 * scale);
+    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(.30f, .49f, .27f, 1));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(.39f, .59f, .33f, 1));
+    if (ImGui::Button("Done", ImVec2(90 * scale, 0))) g_dialog_close.store(true);
+    ImGui::PopStyleColor(2);
+    ImGui::End();
+    ImGui::PopStyleVar(2);
 }
 
-void draw_overlay_window() {
-    ImGuiIO& io = ImGui::GetIO();
-
-    // Use the bigger font we added to the atlas on attach(). PushFont scales
-    // the glyphs directly instead of up-sampling the default 13 px bitmap.
-    if (g_overlay_font != nullptr) ImGui::PushFont(g_overlay_font);
-
-    const ImVec2 displaySize = io.DisplaySize;
-    // First open uses ~65% of the display; after that, the user's resize sticks
-    // for the life of the process. Children scroll if the window gets smaller
-    // than their content needs.
-    float w = g_overlay_size.x > 0 ? g_overlay_size.x : displaySize.x * 0.65f;
-    float h = g_overlay_size.y > 0 ? g_overlay_size.y : displaySize.y * 0.65f;
-    w = std::min(w, displaySize.x * 0.98f);
-    h = std::min(h, displaySize.y * 0.98f);
-    ImGui::SetNextWindowPos(ImVec2(displaySize.x * 0.5f, displaySize.y * 0.5f),
-                            ImGuiCond_Always, ImVec2(0.5f, 0.5f));
-    ImGui::SetNextWindowSize(ImVec2(w, h), ImGuiCond_Appearing);
-    ImGui::SetNextWindowSizeConstraints(ImVec2(displaySize.x * 0.3f, displaySize.y * 0.3f),
-                                        ImVec2(displaySize.x,       displaySize.y));
-
-    // Deeper window background, visible yellow border like DKR-R uses.
-    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.08f, 0.09f, 0.14f, 0.98f));
-    ImGui::PushStyleColor(ImGuiCol_Border,   ImVec4(0.95f, 0.72f, 0.10f, 0.75f));
-    ImGui::PushStyleColor(ImGuiCol_FrameBg,  ImVec4(0.12f, 0.16f, 0.24f, 1.0f));
-    ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, ImVec4(0.18f, 0.22f, 0.32f, 1.0f));
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 2.0f);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 14.0f);
-    ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 12.0f);
-    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 8.0f);
-    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(14.0f, 10.0f));
-    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(10.0f, 10.0f));
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(16.0f, 16.0f));
-
-    const bool open = ImGui::Begin("##yoshi_overlay", nullptr,
-        ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse |
-        ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoTitleBar);
-    if (open) {
-        // Remember the current size so re-opening uses the same dimensions.
-        g_overlay_size = ImGui::GetWindowSize();
-        const float sidebarW = std::max(ImGui::GetFontSize() * 13.0f, w * 0.26f);
-        const ImVec2 avail = ImGui::GetContentRegionAvail();
-        const ImVec2 sideArea(sidebarW, avail.y);
-        const ImVec2 contentArea(avail.x - sidebarW - ImGui::GetStyle().ItemSpacing.x, avail.y);
-        draw_sidebar(sideArea);
-        ImGui::SameLine();
-        draw_content(contentArea);
+void close_settings_window() {
+    if (!g_dialog_window) { g_visible.store(false); return; }
+    {
+        std::scoped_lock lock(g_app->presentQueue->inspectorMutex);
+        ScopedContext context(g_dialog_context);
+        if (g_pending_msaa >= 0) g_settings.msaa = g_pending_msaa;
+        settings_save(g_settings_path);
+        g_capture_target = CaptureTarget::None;
+        ImGui_ImplSDLRenderer2_Shutdown();
+        ImGui_ImplSDL2_Shutdown();
+        ImGui::DestroyContext(g_dialog_context);
+        g_dialog_context = nullptr;
     }
-    ImGui::End();
+    // Destroying/reparenting a Win32 window can synchronously dispatch messages.
+    // Do it only on the main thread, after releasing the renderer's UI lock.
+    platform::enable_window(g_sdl_window, true);
+    SDL_DestroyRenderer(g_dialog_renderer);
+    SDL_DestroyWindow(g_dialog_window);
+    g_dialog_window = nullptr;
+    g_dialog_renderer = nullptr;
+    g_visible.store(false);
+    SDL_RaiseWindow(g_sdl_window);
+}
 
-    ImGui::PopStyleVar(7);
-    ImGui::PopStyleColor(4);
-    if (g_overlay_font != nullptr) ImGui::PopFont();
+void show_settings_window(int page) {
+    g_active = page;
+    if (g_dialog_window) {
+        SDL_SetWindowTitle(g_dialog_window, page_title());
+        SDL_RaiseWindow(g_dialog_window);
+        g_focus_content.store(true);
+        return;
+    }
+    int x, y, w, h;
+    SDL_GetWindowPosition(g_sdl_window, &x, &y);
+    SDL_GetWindowSize(g_sdl_window, &w, &h);
+    const float scale = platform::window_scale(g_sdl_window);
+    const int width = int(700 * scale), height = int((Page(g_active) == Page::Audio ? 260 : 500) * scale);
+    g_dialog_window = SDL_CreateWindow(page_title(), x + (w-width)/2, y + (h-height)/2,
+        width, height, SDL_WINDOW_HIDDEN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI);
+    if (!g_dialog_window) { g_visible.store(false); return; }
+    SDL_SetWindowMinimumSize(g_dialog_window, int(560 * scale), int(260 * scale));
+    platform::set_dialog_owner(g_dialog_window, g_sdl_window);
+    g_dialog_renderer = SDL_CreateRenderer(g_dialog_window, -1, SDL_RENDERER_ACCELERATED);
+    if (!g_dialog_renderer) g_dialog_renderer = SDL_CreateRenderer(g_dialog_window, -1, SDL_RENDERER_SOFTWARE);
+    if (!g_dialog_renderer) {
+        SDL_DestroyWindow(g_dialog_window);
+        g_dialog_window = nullptr;
+        g_visible.store(false);
+        return;
+    }
+    // SDL_Renderer may recreate the native HWND; apply ownership and chrome last.
+    platform::set_dialog_owner(g_dialog_window, g_sdl_window);
+    platform::apply_window_chrome(g_dialog_window);
+    set_window_icon(g_dialog_window);
+    {
+        std::scoped_lock lock(g_app->presentQueue->inspectorMutex);
+        ScopedContext context(g_game_context);
+        g_dialog_context = ImGui::CreateContext();
+        ImGui::SetCurrentContext(g_dialog_context);
+        auto& io = ImGui::GetIO();
+        io.IniFilename = nullptr;
+        io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard | ImGuiConfigFlags_NavEnableGamepad;
+        io.BackendFlags |= ImGuiBackendFlags_HasGamepad;
+        ui::apply_style(scale);
+        g_dialog_fonts.load(14);
+        io.FontDefault = g_dialog_fonts.at(scale);
+        ImGui_ImplSDL2_InitForSDLRenderer(g_dialog_window, g_dialog_renderer);
+        ImGui_ImplSDLRenderer2_Init(g_dialog_renderer);
+    }
+    platform::enable_window(g_sdl_window, false);
+    g_visible.store(true);
+    g_focus_content.store(true);
+    g_dialog_last_frame = 0;
+    SDL_ShowWindow(g_dialog_window);
+    SDL_RaiseWindow(g_dialog_window);
+}
+
+void render_settings_window() {
+    if (!g_dialog_window) return;
+    const auto now = SDL_GetTicks64();
+    if (now - g_dialog_last_frame < 16) return;
+    g_dialog_last_frame = now;
+    std::scoped_lock lock(g_app->presentQueue->inspectorMutex);
+    ScopedContext context(g_dialog_context);
+    const float density = platform::window_scale(g_dialog_window);
+    ui::apply_style(density);
+    ImGui::GetIO().FontDefault = g_dialog_fonts.at(density);
+    ImGui_ImplSDLRenderer2_NewFrame();
+    ImGui_ImplSDL2_NewFrame();
+    ImGui::NewFrame();
+    draw_settings_contents();
+    ImGui::Render();
+    const auto scale = ImGui::GetIO().DisplayFramebufferScale;
+    SDL_RenderSetScale(g_dialog_renderer, scale.x, scale.y);
+    SDL_SetRenderDrawColor(g_dialog_renderer, 14, 27, 20, 255);
+    SDL_RenderClear(g_dialog_renderer);
+    ImGui_ImplSDLRenderer2_RenderDrawData(ImGui::GetDrawData());
+    SDL_RenderPresent(g_dialog_renderer);
 }
 
 } // namespace
@@ -747,21 +712,15 @@ void attach(RT64::Application& app) {
     // HasGamepad is required for Nav to pick up those input events.
     io.BackendFlags |= ImGuiBackendFlags_HasGamepad;
 
-    // Add a bigger font to the atlas while it is still mutable. The Vulkan
-    // ImGui backend builds the atlas lazily on the first newFrame() call, so
-    // adding here (before our first draw) is in time. FontGlobalScale cannot
-    // enlarge the baked default 13 px bitmap convincingly, so we rasterise a
-    // dedicated larger font and PushFont around our drawing.
-    ImFontConfig cfg;
-    cfg.SizePixels = 26.0f;
-    cfg.OversampleH = 2;
-    cfg.OversampleV = 2;
-    g_overlay_font = io.Fonts->AddFontDefault(&cfg);
+    g_game_context = ImGui::GetCurrentContext();
+    g_menu_scale = platform::window_scale(g_sdl_window);
+    ui::apply_style(g_menu_scale);
+    g_menu_fonts.load(13);
+    io.FontDefault = g_menu_fonts.at(g_menu_scale);
 
     g_app = &app;
     g_attached = true;
     g_pending_msaa = -1;
-    g_overlay_size = ImVec2(0, 0);   // use default on first open
 }
 
 void detach(RT64::Application& app) {
@@ -787,51 +746,69 @@ void draw(RT64::Application& app) {
     RT64::Inspector* inspector = app.presentQueue->inspector.get();
     if (inspector == nullptr) return;
 
+    ScopedContext context(g_game_context);
+    g_menu_scale = platform::window_scale(g_sdl_window);
+    ui::apply_style(g_menu_scale);
+    ImGui::GetIO().FontDefault = g_menu_fonts.at(g_menu_scale);
     inspector->newFrame(app.framebufferGraphicsWorker.get());
-    const bool wasVisible = g_visible.load(std::memory_order_acquire);
-    if (wasVisible) {
-        draw_overlay_window();
-        if (!g_visible.load(std::memory_order_acquire)) {
-            // Just closed: write pending MSAA into settings (applies next launch),
-            // persist to data/settings.ini.
-            if (g_pending_msaa >= 0) g_settings.msaa = g_pending_msaa;
-            settings_save(g_settings_path);
-        }
-    }
+    draw_menu_bar();
+    g_menu_open.store(ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel));
     inspector->endFrame();
-
-    // A on RESTART / EXIT fires via the sidebar action latch (set by either a
-    // mouse click or a controller A-press from handle_event). Run it after
-    // endFrame so neither execvp nor _exit runs with the inspector lock held.
-    const int action = g_sidebar_action.exchange(0, std::memory_order_acq_rel);
-    if (action == 1) {
-        if (g_pending_msaa >= 0) g_settings.msaa = g_pending_msaa;
-        settings_save(g_settings_path);
-        restart_game();
-    } else if (action == 2) {
-        if (g_pending_msaa >= 0) g_settings.msaa = g_pending_msaa;
-        settings_save(g_settings_path);
-        _exit(0);
-    }
 }
 
-// Move the sidebar cursor by `delta`, wrapping around all slots. Updates the
-// active page when the cursor lands on a page slot, and requests content
-// focus so the D-pad drives widgets rather than drifting back into the
-// sidebar. Mirrors DKR-R runtime_ui.cpp:9701-9728.
-void cycle_sidebar(int delta) {
-    int next = g_sidebar_cursor + delta;
-    while (next < 0) next += kSidebarSlots;
-    next %= kSidebarSlots;
-    g_sidebar_cursor = next;
-    if (next < int(SideItem::Count)) {
-        g_active = next;
+void process_actions() {
+    const int action = g_menu_action.exchange(0);
+    if (action > 0 && action <= 2) {
+        if (g_pending_msaa >= 0) g_settings.msaa = g_pending_msaa;
+        settings_save(g_settings_path);
+        if (action == 1) restart_game();
+        else std::_Exit(0);
+    } else if (action == 5) {
+        g_manual_pause = !g_manual_pause;
+    } else if (action > 2) {
+        const auto folder = action == 4 ? g_settings_path.parent_path() / "saves" : g_settings_path.parent_path();
+        if (!platform::open_folder(folder)) fprintf(stderr, "[menu] Could not open folder\n");
     }
-    g_focus_content.store(true, std::memory_order_release);
+    if (!g_attached || !g_app || !g_app->presentQueue) return;
+    if (g_dialog_close.exchange(false)) close_settings_window();
+    const int page = g_page_request.exchange(-1);
+    if (page >= 0) show_settings_window(page);
+    const bool paused = g_manual_pause || g_visible.load();
+    if (paused != game_pause::is_paused()) {
+        game_pause::set_paused(paused);
+        audio_set_paused(paused);
+        fprintf(stderr, "[game] %s\n", paused ? "Paused" : "Resumed");
+    }
+    render_settings_window();
+}
+
+void cycle_page(int delta) {
+    g_page_request.store((g_active + delta + int(Page::Count)) % int(Page::Count));
 }
 
 bool handle_event(SDL_Event* event) {
-    if (!g_attached || event == nullptr) return false;
+    if (!g_attached || event == nullptr || !g_app || !g_app->presentQueue) return false;
+    std::scoped_lock lock(g_app->presentQueue->inspectorMutex);
+    auto* inspector = g_app->presentQueue->inspector.get();
+    if (!inspector) return false;
+    const Uint32 dialogId = g_dialog_window ? SDL_GetWindowID(g_dialog_window) : 0;
+    bool dialogEvent = false;
+    switch (event->type) {
+        case SDL_WINDOWEVENT: dialogEvent = dialogId && event->window.windowID == dialogId; break;
+        case SDL_KEYDOWN: case SDL_KEYUP: dialogEvent = dialogId && event->key.windowID == dialogId; break;
+        case SDL_TEXTINPUT: dialogEvent = dialogId && event->text.windowID == dialogId; break;
+        case SDL_MOUSEMOTION: dialogEvent = dialogId && event->motion.windowID == dialogId; break;
+        case SDL_MOUSEBUTTONDOWN: case SDL_MOUSEBUTTONUP: dialogEvent = dialogId && event->button.windowID == dialogId; break;
+        case SDL_MOUSEWHEEL: dialogEvent = dialogId && event->wheel.windowID == dialogId; break;
+        case SDL_CONTROLLERBUTTONDOWN: case SDL_CONTROLLERBUTTONUP: case SDL_CONTROLLERAXISMOTION:
+            dialogEvent = dialogId != 0; break;
+        default: break;
+    }
+    ScopedContext context(dialogEvent ? g_dialog_context : g_game_context);
+    if (dialogEvent && event->type == SDL_WINDOWEVENT && event->window.event == SDL_WINDOWEVENT_CLOSE) {
+        g_dialog_close.store(true);
+        return true;
+    }
 
     // Capture mode (DKR-R pattern): intercept the next key/button press to
     // apply as a new binding. Takes priority over all other event handling so
@@ -870,6 +847,10 @@ bool handle_event(SDL_Event* event) {
     // ESC / F1 / Controller Back toggle visibility and consume the event.
     if (event->type == SDL_KEYDOWN && !event->key.repeat) {
         const SDL_Scancode code = event->key.keysym.scancode;
+        if (code == SDL_SCANCODE_PAUSE && !g_visible.load()) {
+            g_menu_action.store(5);
+            return true;
+        }
         if (code == SDL_SCANCODE_ESCAPE || code == SDL_SCANCODE_F1) {
             toggle();
             return true;
@@ -881,70 +862,42 @@ bool handle_event(SDL_Event* event) {
         return true;
     }
 
-    if (!g_visible.load(std::memory_order_acquire)) return false;
-
-    // While visible: shoulder buttons own the sidebar, B closes, A activates
-    // RESTART/EXIT when the cursor is on them. Pattern: DKR-R runtime_ui.cpp:9697+.
-    if (event->type == SDL_CONTROLLERBUTTONDOWN) {
+    if (event->type == SDL_KEYDOWN && !event->key.repeat &&
+            event->key.keysym.scancode == SDL_SCANCODE_M && (event->key.keysym.mod & KMOD_CTRL)) {
+        audio_set_muted(!audio_get_muted());
+        settings_save(g_settings_path);
+        return true;
+    }
+    if (g_visible.load() && event->type == SDL_CONTROLLERBUTTONDOWN) {
         switch (event->cbutton.button) {
-            case SDL_CONTROLLER_BUTTON_LEFTSHOULDER:
-                cycle_sidebar(-1);
-                return true;
-            case SDL_CONTROLLER_BUTTON_RIGHTSHOULDER:
-                cycle_sidebar(+1);
-                return true;
-            case SDL_CONTROLLER_BUTTON_B:
-                // Yoshi-specific: B closes the overlay. DKR-R uses Back for
-                // toggle; we keep Back for toggle and let B double as close.
-                g_visible.store(false, std::memory_order_release);
-                return true;
-            case SDL_CONTROLLER_BUTTON_A:
-                if (g_sidebar_cursor == kSlotRestart) {
-                    g_sidebar_action.store(1, std::memory_order_release);
-                    return true;
-                }
-                if (g_sidebar_cursor == kSlotExit) {
-                    g_sidebar_action.store(2, std::memory_order_release);
-                    return true;
-                }
-                // Otherwise fall through so A is routed to ImGui (activates
-                // the focused widget in the content pane).
-                break;
-            default:
-                break;
+            case SDL_CONTROLLER_BUTTON_LEFTSHOULDER: cycle_page(-1); return true;
+            case SDL_CONTROLLER_BUTTON_RIGHTSHOULDER: cycle_page(1); return true;
+            case SDL_CONTROLLER_BUTTON_B: g_dialog_close.store(true); return true;
+            default: break;
         }
     }
-
-    // Route to inspector so the panel sees mouse / keyboard input, and feed
-    // gamepad to ImGui ourselves (RT64's SDL2 backend ignores controllers).
-    // Returning true below swallows the event: the game's input polling is
-    // already zeroed via overlay::is_visible() in input_sample().
-    if (g_app != nullptr && g_app->presentQueue != nullptr) {
-        std::scoped_lock lock(g_app->presentQueue->inspectorMutex);
-        if (auto* inspector = g_app->presentQueue->inspector.get()) {
-            inspector->handleSdlEvent(event);
-        }
-    }
-    feed_controller_to_imgui(*event);
-    return true;
+    // Feed pointer movement even while no dialog is open, so the persistent
+    // top menu remains clickable. Inspector access is serialized with drawing.
+    if (dialogEvent) ImGui_ImplSDL2_ProcessEvent(event);
+    else inspector->handleSdlEvent(event);
+    const bool capture = g_visible.load() || g_menu_open.load();
+    if (capture) feed_controller_to_imgui(*event);
+    if (event->type == SDL_MOUSEBUTTONDOWN || event->type == SDL_MOUSEBUTTONUP)
+        return capture || (!g_settings.fullscreen && event->button.y < g_menu_height.load());
+    if (event->type == SDL_MOUSEMOTION)
+        return capture || (!g_settings.fullscreen && event->motion.y < g_menu_height.load());
+    if (event->type == SDL_WINDOWEVENT) return dialogEvent;
+    if (event->type == SDL_QUIT) return false;
+    return capture;
 }
 
 void toggle() {
-    const bool next = !g_visible.load(std::memory_order_acquire);
-    g_visible.store(next, std::memory_order_release);
-    if (next) {
-        // On open, reset the sidebar cursor to the current page and request
-        // focus into the content panel so the D-pad drives widgets directly.
-        g_sidebar_cursor = g_active;
-        g_focus_content.store(true, std::memory_order_release);
-    } else {
-        // Cancel any pending rebind capture when the overlay closes.
-        g_capture_target = CaptureTarget::None;
-    }
+    if (g_visible.load()) g_dialog_close.store(true);
+    else open_page(Page(g_active));
 }
 
 bool is_visible() {
-    return g_visible.load(std::memory_order_acquire);
+    return g_visible.load(std::memory_order_acquire) || g_menu_open.load(std::memory_order_acquire);
 }
 
 } // namespace overlay

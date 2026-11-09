@@ -14,3 +14,9 @@ imgui.ini
 *.AppImage
 appimage-tools/
 CLAUDE.md
+.deps/
+build-*/
+dist/
+data/mods.json
+*.n64
+*.v64
