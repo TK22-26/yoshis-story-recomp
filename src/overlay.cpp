@@ -242,7 +242,8 @@ void draw_controls_tab() {
             const float axisX = padX + 8;
             sw::axis_glyph(binding.axis, type, axisX, y + 4);
             const bool vertical = binding.axis == SDL_CONTROLLER_AXIS_LEFTY || binding.axis == SDL_CONTROLLER_AXIS_RIGHTY;
-            const char* dir = binding.axis >= SDL_CONTROLLER_AXIS_TRIGGERLEFT ? "Trigger" :
+            const char* dir = binding.axis == SDL_CONTROLLER_AXIS_TRIGGERLEFT ? "Left trigger" :
+                binding.axis == SDL_CONTROLLER_AXIS_TRIGGERRIGHT ? "Right trigger" :
                 vertical ? (binding.axis_direction < 0 ? "Up" : "Down") :
                            (binding.axis_direction < 0 ? "Left" : "Right");
             sw::text(axisX + 40, y + 9, dir, sw::Secondary, sw::Type::Small);

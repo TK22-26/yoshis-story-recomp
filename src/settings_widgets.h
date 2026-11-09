@@ -24,6 +24,7 @@ constexpr ImU32 DarkText = IM_COL32(14, 26, 10, 255);
 
 struct Fonts {
     ImFont *body = nullptr, *detail = nullptr, *label = nullptr, *title = nullptr, *number = nullptr;
+    ImFont *glyph = nullptr, *shoulder = nullptr;
     float loaded_scale = 0;
     void load(float density);
 };
@@ -33,7 +34,7 @@ ImVec2 px(float x, float y);
 void at(float x, float y);
 float width();
 float height();
-enum class Type { Body, Small, Label, Title, Number };
+enum class Type { Body, Small, Label, Title, Number, Glyph, Shoulder };
 void text(float x, float y, const char *value, ImU32 color = Text, Type type = Type::Body);
 void text_right(float right, float y, const char *value, ImU32 color = Muted, Type type = Type::Small);
 float paragraph(float x, float y, float wrap, const char *value, ImU32 color = Muted);

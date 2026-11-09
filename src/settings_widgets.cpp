@@ -20,6 +20,10 @@ ImFont *font(Type type) {
         return active_fonts->title;
     case Type::Number:
         return active_fonts->number;
+    case Type::Glyph:
+        return active_fonts->glyph;
+    case Type::Shoulder:
+        return active_fonts->shoulder;
     default:
         return active_fonts->body;
     }
@@ -61,6 +65,43 @@ bool playstation(SDL_GameControllerType type) {
     return type == SDL_CONTROLLER_TYPE_PS3 || type == SDL_CONTROLLER_TYPE_PS4 ||
            type == SDL_CONTROLLER_TYPE_PS5;
 }
+void shoulder_glyph(bool trigger, bool left, bool ps, float x, float y, float size) {
+    // Geometry from the supplied Glyph.dc.html: a 46x34 viewBox displayed at
+    // 1.28 * size wide, centered vertically in the size-high glyph slot.
+    const float w = size * 1.28f, unit = w / 46.f;
+    x += (size - w) / 2;
+    const float top = y + (size - 34 * unit) / 2;
+    const ImU32 fill = IM_COL32(27, 39, 30, 255), border = IM_COL32(74, 92, 80, 255);
+    if (trigger) {
+        auto p = [&](float sx, float sy) { return point(x + sx * unit, top + sy * unit); };
+        const ImVec2 a = p(left ? 5 : 41, 30), b = p(left ? 41 : 5, 30), c = p(left ? 41 : 5, 5);
+        auto* draw = ImGui::GetWindowDrawList();
+        // Filled triangle + rounded strokes reproduce SVG stroke-linejoin=round.
+        auto triangle = [&](ImU32 color, float stroke) {
+            const float thickness = stroke * unit * density;
+            draw->AddTriangleFilled(a, b, c, ink(color));
+            draw->AddLine(a, b, ink(color), thickness);
+            draw->AddLine(b, c, ink(color), thickness);
+            draw->AddLine(c, a, ink(color), thickness);
+            for (const auto& corner : {a, b, c}) draw->AddCircleFilled(corner, thickness / 2, ink(color), 12);
+        };
+        triangle(border, 6);
+        triangle(fill, 3.5f);
+    } else {
+        auto* draw = ImGui::GetWindowDrawList();
+        const auto a = point(x + 1.5f * unit, top + 6 * unit);
+        const auto b = point(x + 44.5f * unit, top + 28 * unit);
+        draw->AddRectFilled(a, b, ink(fill), 7 * unit * density);
+        draw->AddRect(a, b, ink(border), 7 * unit * density, 0, 1.5f * unit * density);
+    }
+    const char* label = trigger ? (ps ? (left ? "L2" : "R2") : (left ? "LT" : "RT"))
+                                : (ps ? (left ? "L1" : "R1") : (left ? "LB" : "RB"));
+    const float tx = x + w * (trigger ? (left ? .66f : .34f) : .5f);
+    const float ty = y + size * (trigger ? .66f : .5f);
+    auto* f = font(Type::Shoulder);
+    const auto bounds = f->CalcTextSizeA(f->FontSize, FLT_MAX, 0, label);
+    text(tx - bounds.x / density / 2, ty - bounds.y / density / 2, label, Text, Type::Shoulder);
+}
 } // namespace
 
 void Fonts::load(float value) {
@@ -73,6 +114,8 @@ void Fonts::load(float value) {
     label = ui::add_font(std::round(14 * value), true);
     title = ui::add_font(std::round(32 * value), true);
     number = ui::add_font(std::round(44 * value), true);
+    glyph = ui::add_font(std::round(11 * value), true);
+    shoulder = ui::add_font(std::round(8 * value), true);
 }
 float scale() { return density; }
 ImVec2 px(float x, float y) { return ImVec2(x * density, y * density); }
@@ -344,28 +387,26 @@ void controller_glyph(int button, SDL_GameControllerType type, float x, float y,
     const bool ps = playstation(type);
     auto *d = ImGui::GetWindowDrawList();
     if (button == SDL_CONTROLLER_BUTTON_LEFTSHOULDER || button == SDL_CONTROLLER_BUTTON_RIGHTSHOULDER) {
-        const bool left = button == SDL_CONTROLLER_BUTTON_LEFTSHOULDER;
-        rounded(x - 4, y + 3, size + 8, size - 6, Field, IM_COL32(74, 92, 80, 255), 7);
-        centered(x - 4, y + 3, size + 8, size - 6, ps ? (left ? "L1" : "R1") : (left ? "LB" : "RB"), Text,
-                 Type::Small);
+        shoulder_glyph(false, button == SDL_CONTROLLER_BUTTON_LEFTSHOULDER, ps, x, y, size);
         return;
     }
     rounded(x, y, size, size, IM_COL32(27, 39, 30, 255), IM_COL32(74, 92, 80, 255), size / 2);
     if (button >= 0 && button <= 3 && ps) {
-        const float a = size * .28f, b = size * .72f, c = size * .5f;
-        const ImU32 colors[] = {IM_COL32(143, 180, 245, 255), IM_COL32(240, 138, 138, 255),
-                                IM_COL32(228, 160, 212, 255), IM_COL32(111, 214, 180, 255)};
-        const auto color = ink(colors[button]);
+        // PlayStation face shapes from the reference's 24x24 icon viewBox.
+        const float icon = size * .56f, unit = icon / 24.f;
+        auto p = [&](float sx, float sy) { return point(x + (size - icon) / 2 + sx * unit,
+                                                        y + (size - icon) / 2 + sy * unit); };
+        const auto color = ink(Text);
+        const float stroke = 2.4f * unit * density;
         if (button == 0) {
-            d->AddLine(point(x + a, y + a), point(x + b, y + b), color, 1.8f * density);
-            d->AddLine(point(x + b, y + a), point(x + a, y + b), color, 1.8f * density);
+            d->AddLine(p(6.5f, 6.5f), p(17.5f, 17.5f), color, stroke);
+            d->AddLine(p(17.5f, 6.5f), p(6.5f, 17.5f), color, stroke);
         } else if (button == 1)
-            d->AddCircle(point(x + c, y + c), size * .25f * density, color, 20, 1.8f * density);
+            d->AddCircle(p(12, 12), 6.5f * unit * density, color, 24, stroke);
         else if (button == 2)
-            d->AddRect(point(x + a, y + a), point(x + b, y + b), color, 0, 0, 1.8f * density);
+            d->AddRect(p(6, 6), p(18, 18), color, unit * density, 0, stroke);
         else
-            d->AddTriangle(point(x + c, y + a), point(x + b, y + b), point(x + a, y + b), color,
-                           1.8f * density);
+            d->AddTriangle(p(12, 5.5f), p(18.5f, 17), p(5.5f, 17), color, stroke);
         return;
     }
     const char *label = "?";
@@ -408,14 +449,12 @@ void controller_glyph(int button, SDL_GameControllerType type, float x, float y,
     default:
         break;
     }
-    centered(x, y, size, size, label, Text, Type::Small);
+    centered(x, y, size, size, label, Text, Type::Glyph);
 }
 void axis_glyph(int axis, SDL_GameControllerType type, float x, float y) {
     const bool ps = playstation(type);
     if (axis == SDL_CONTROLLER_AXIS_TRIGGERLEFT || axis == SDL_CONTROLLER_AXIS_TRIGGERRIGHT) {
-        const bool left = axis == SDL_CONTROLLER_AXIS_TRIGGERLEFT;
-        rounded(x, y + 1, 32, 26, Field, FieldBorder, 7);
-        centered(x, y + 1, 32, 26, ps ? (left ? "L2" : "R2") : (left ? "LT" : "RT"), Text, Type::Small);
+        shoulder_glyph(true, axis == SDL_CONTROLLER_AXIS_TRIGGERLEFT, ps, x + 3, y, 26);
         return;
     }
     const bool left = axis == SDL_CONTROLLER_AXIS_LEFTX || axis == SDL_CONTROLLER_AXIS_LEFTY;
