@@ -331,6 +331,14 @@ Use **Controllers > Controller mapping** to remap inputs, or **Esc** /
 controller **Back** to open settings. Settings are native windows owned by the
 game window. They pause the game until closed, preserving a manual pause.
 
+Video, Audio, Controls, and About use the supplied settings designs: rounded
+dark-green cards, segmented options, switches, and controller glyphs drawn in
+code. Settings use installed Segoe UI and Segoe UI Semibold on Windows, with
+no bundled fonts or images. Changes save while the dialog is open; anti-aliasing
+still requires a restart. Controls supports scrolling, keyboard/controller
+rebinding, and reset to defaults. About links to the projects and keeps the
+credits and shortcut list accessible from its footer.
+
 The desktop menu uses JFG's compact 24 dp bar and 26 dp dropdown rows with a
 dark green, cream, and soft green palette. Windows uses an installed Segoe UI
 font and per-monitor DPI awareness; no font assets are bundled. **Game >

@@ -168,6 +168,7 @@ add_executable(yoshis_story_recomp
     "${CMAKE_CURRENT_SOURCE_DIR}/src/main.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/platform.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/ui_style.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/settings_widgets.cpp"
     # Settings window shown before the game (Dear ImGui from RT64, drawn with
     # SDL_Renderer; RT64 itself only builds the Vulkan backend).
     "${CMAKE_CURRENT_SOURCE_DIR}/src/launcher.cpp"

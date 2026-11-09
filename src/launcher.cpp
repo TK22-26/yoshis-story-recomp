@@ -138,13 +138,13 @@ void settings_load(const std::filesystem::path& path) {
     }
 }
 
-void settings_save(const std::filesystem::path& path) {
+bool settings_save(const std::filesystem::path& path, const YoshiSettings* values) {
     std::ofstream out(path);
     if (!out) {
         fprintf(stderr, "[settings] could not write %s\n", path.string().c_str());
-        return;
+        return false;
     }
-    const YoshiSettings& s = g_settings;
+    const YoshiSettings& s = values ? *values : g_settings;
     out << "# Yoshi's Story recomp display settings (edited by the launcher window).\n"
         << "# resolution: 0 native, 1 fit window, 2 multiplier; upscale2d: 0 original,\n"
         << "# 1 scaled only, 2 all; filter: 0 nearest, 1 linear, 2 pixel scaling.\n"
@@ -172,6 +172,9 @@ void settings_save(const std::filesystem::path& path) {
     out << "bind.deadzone = " << s.bindings.deadzone << "\n"
         << "bind.invert_x = " << (s.bindings.invert_x ? 1 : 0) << "\n"
         << "bind.invert_y = " << (s.bindings.invert_y ? 1 : 0) << "\n";
+    out.flush();
+    if (!out) fprintf(stderr, "[settings] write failed: %s\n", path.string().c_str());
+    return bool(out);
 }
 
 void settings_apply_env() {

@@ -65,7 +65,7 @@ extern YoshiSettings g_settings;
 extern std::filesystem::path g_settings_path;
 
 void settings_load(const std::filesystem::path& path);
-void settings_save(const std::filesystem::path& path);
+bool settings_save(const std::filesystem::path& path, const YoshiSettings* values = nullptr);
 // Push settings into RT64. MSAA is applied only at initialization; changing it
 // while rendering can invalidate resources still in use.
 // CRT, crop and fullscreen have their own apply paths; see overlay.cpp.
@@ -97,6 +97,7 @@ void set_window_icon(SDL_Window* window);
 
 // Name of the currently connected game controller, or nullptr if none.
 const char* input_current_controller_name();
+SDL_GameControllerType input_current_controller_type();
 
 // Show the settings window. Saves on Start. Returns false if the user quit.
 bool run_launcher(const std::filesystem::path& settingsPath);

@@ -10,14 +10,16 @@
 #endif
 
 namespace ui {
-ImFont* add_font(float size) {
+ImFont* add_font(float size, bool semibold) {
     // Use an installed UI font. No font or game asset is copied into the repo
     // or release. Dear ImGui's built-in font is the last-resort fallback.
     std::vector<std::filesystem::path> candidates;
 #ifdef _WIN32
     wchar_t windows[MAX_PATH];
-    if (GetWindowsDirectoryW(windows, MAX_PATH))
+    if (GetWindowsDirectoryW(windows, MAX_PATH)) {
+        if (semibold) candidates.push_back(std::filesystem::path(windows) / "Fonts" / "seguisb.ttf");
         candidates.push_back(std::filesystem::path(windows) / "Fonts" / "segoeui.ttf");
+    }
 #else
     candidates = {"/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
         "/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf"};
@@ -42,14 +44,14 @@ ImFont* add_font(float size) {
     return ImGui::GetIO().Fonts->AddFontDefault(&cfg);
 }
 
-void Fonts::load(float size) {
+void Fonts::load(float size, bool semibold) {
 #ifdef _WIN32
     // RmlUi uses em sizes; stb_truetype measures ascent + descent. Segoe UI's
     // hhea span is 2724 units for a 2048-unit em. Preserve JFG's 13 dp visual
     // text size instead of shrinking the glyphs into a 13-pixel line box.
     size *= 2724.0f / 2048.0f;
 #endif
-    for (size_t i = 0; i < fonts.size(); ++i) fonts[i] = add_font(std::round(size * (1.0f + i * .25f)));
+    for (size_t i = 0; i < fonts.size(); ++i) fonts[i] = add_font(std::round(size * (1.0f + i * .25f)), semibold);
 }
 ImFont* Fonts::at(float scale) const {
     return fonts[std::clamp(int(std::round((scale - 1.0f) * 4)), 0, int(fonts.size()) - 1)];

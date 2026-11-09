@@ -948,6 +948,10 @@ const char* input_current_controller_name() {
     return g_controller ? SDL_GameControllerName(g_controller) : nullptr;
 }
 
+SDL_GameControllerType input_current_controller_type() {
+    return g_controller ? SDL_GameControllerGetType(g_controller) : SDL_CONTROLLER_TYPE_UNKNOWN;
+}
+
 static void input_open_controller() {
     if (g_controller) return;
     for (int i = 0; i < SDL_NumJoysticks(); i++) {

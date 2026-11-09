@@ -31,6 +31,7 @@
 
 #include "launcher.h"
 #include "ui_style.h"
+#include "settings_widgets.h"
 #include "imgui/imgui_impl_sdl2_custom.h"
 #include "backends/imgui_impl_sdlrenderer2.h"
 
@@ -41,7 +42,7 @@ std::mutex g_attach_mutex;
 bool g_attached = false;
 RT64::Application* g_app = nullptr;   // only valid while g_attached is true
 ui::Fonts g_menu_fonts;
-ui::Fonts g_dialog_fonts;
+settings_ui::Fonts g_dialog_fonts;
 float g_menu_scale = 1.0f;
 
 // DKR-R-style capture state for button rebinding in the Controls tab.
@@ -53,6 +54,7 @@ int g_capture_action_idx = -1;
 enum class Page { Display, Audio, Controls, About, Count };
 int g_active = int(Page::Display); // Main-thread dialog state
 int g_pending_msaa = -1;
+int g_active_msaa = 0;
 std::atomic<bool> g_focus_content{false};
 std::atomic<bool> g_menu_open{false};
 std::atomic<int> g_menu_visibility{-1}; // -1: automatic; F1 explicitly shows/hides
@@ -71,6 +73,11 @@ struct ScopedContext {
 };
 std::atomic<int> g_menu_action{0}; // restart, exit, data folder, save folder, pause
 bool g_manual_pause = false; // main thread only
+bool g_about_details = false;
+bool g_dialog_saved = false;
+bool g_dialog_save_failed = false;
+YoshiSettings g_saved_settings;
+Uint64 g_last_settings_save = 0;
 
 constexpr double kMultipliers[] = { 2, 3, 4, 5, 6, 8, 10 };
 constexpr int kMultiplierCount = int(sizeof(kMultipliers) / sizeof(kMultipliers[0]));
@@ -145,20 +152,6 @@ void heading(const char* text) {
     ImGui::Spacing();
 }
 
-// Compact labels and wrapped descriptions share the launcher palette.
-void field_label(const char* text) {
-    ImGui::Spacing();
-    ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_Text));
-    ImGui::TextUnformatted(text);
-    ImGui::PopStyleColor();
-}
-
-void field_desc(const char* text) {
-    ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
-    ImGui::TextWrapped("%s", text);
-    ImGui::PopStyleColor();
-}
-
 // Human-readable name for an SDL_GameControllerButton value.
 // Mirrors DKR-R runtime_controls_ui.inl FriendlyBinding.
 static const char* button_name(int btn) {
@@ -182,240 +175,243 @@ static const char* button_name(int btn) {
     }
 }
 
+namespace sw = settings_ui;
+
 void draw_controls_tab() {
-    heading("Controller mapping");
-    ImGui::PushItemWidth(-1.0f);
-
-    // --- Device ---
-    field_label("Controller");
-    const char* cname = input_current_controller_name();
-    if (cname) {
-        ImGui::TextUnformatted(cname);
-    } else {
-        ImGui::TextDisabled("No controller connected");
-    }
-    ImGui::Spacing();
-
-    // --- Stick ---
-    field_label("Stick deadzone");
-    ImGui::SliderFloat("##dz", &g_settings.bindings.deadzone, 0.0f, 0.5f, "%.2f");
-    field_desc("Minimum stick deflection registered as movement. Default: 0.15.");
-
-    field_label("STICK AXIS");
-    ImGui::Checkbox("Invert horizontal (X)", &g_settings.bindings.invert_x);
-    ImGui::SameLine();
-    ImGui::Checkbox("Invert vertical (Y)", &g_settings.bindings.invert_y);
-    ImGui::Spacing();
-
-    // --- Button mapping table ---
-    heading("BUTTON MAPPING");
-    field_desc("Click a key or button cell to rebind it. Esc cancels. "
-               "Axis inputs (right stick, triggers) always active alongside any button binding.");
-    ImGui::Spacing();
-
-    static const char* const kActionLabels[] = {
-        "A", "B", "Z", "Start",
-        "L (shoulder)", "R (shoulder)",
-        "C Up", "C Down", "C Left", "C Right",
-        "D-pad Up", "D-pad Down", "D-pad Left", "D-pad Right",
-        "Stick Up", "Stick Down", "Stick Left", "Stick Right",
-    };
-    // Non-null = axis-driven; show label instead of rebind button.
-    static const char* const kAxisLabels[] = {
-        nullptr,                  // A
-        nullptr,                  // B
-        "L-trigger (axis)",       // Z
-        nullptr,                  // Start
-        nullptr,                  // L
-        nullptr,                  // R
-        "R-stick \xe2\x86\x91",  // CUp
-        "R-stick \xe2\x86\x93",  // CDown
-        "R-stick \xe2\x86\x90",  // CLeft
-        "R-stick \xe2\x86\x92",  // CRight
-        nullptr,                  // DUp
-        nullptr,                  // DDown
-        nullptr,                  // DLeft
-        nullptr,                  // DRight
-        "L-stick \xe2\x86\x91",  // StickUp
-        "L-stick \xe2\x86\x93",  // StickDown
-        "L-stick \xe2\x86\x90",  // StickLeft
-        "L-stick \xe2\x86\x92",  // StickRight
-    };
-    static_assert(sizeof(kActionLabels) / sizeof(kActionLabels[0]) ==
-                  static_cast<int>(N64Action::Count), "label count mismatch");
-    static_assert(sizeof(kAxisLabels) / sizeof(kAxisLabels[0]) ==
-                  static_cast<int>(N64Action::Count), "axis label count mismatch");
-
-    if (ImGui::BeginTable("##bindings", 3,
-            ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
-            ImGuiTableFlags_SizingStretchSame)) {
-        ImGui::TableSetupColumn("N64 BUTTON", ImGuiTableColumnFlags_WidthStretch, 1.0f);
-        ImGui::TableSetupColumn("KEYBOARD",   ImGuiTableColumnFlags_WidthStretch, 1.5f);
-        ImGui::TableSetupColumn("Controller", ImGuiTableColumnFlags_WidthStretch, 1.5f);
-        ImGui::TableHeadersRow();
-
-        for (int i = 0; i < int(N64Action::Count); i++) {
-            ImGui::TableNextRow();
-            const float btnW = ImGui::GetContentRegionAvail().x;
-
-            // Col 0: action name
-            ImGui::TableSetColumnIndex(0);
-            ImGui::TextUnformatted(kActionLabels[i]);
-
-            // Col 1: keyboard binding
-            ImGui::TableSetColumnIndex(1);
-            {
-                const int sc = g_settings.bindings.actions[i].key;
-                char label[80];
-                const bool capturing = g_capture_target == CaptureTarget::Keyboard &&
-                                       g_capture_action_idx == i;
-                if (capturing) {
-                    snprintf(label, sizeof(label), "Press a key...##kb%d", i);
-                    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.75f, 0.18f, 0.12f, 1.0f));
-                    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.90f, 0.25f, 0.18f, 1.0f));
-                } else if (sc < 0) {
-                    snprintf(label, sizeof(label), "Unbound##kb%d", i);
-                } else {
-                    snprintf(label, sizeof(label), "%s##kb%d",
-                             SDL_GetScancodeName(static_cast<SDL_Scancode>(sc)), i);
-                }
-                if (ImGui::Button(label, ImVec2(btnW, 0))) {
-                    g_capture_action_idx = i;
-                    g_capture_target = CaptureTarget::Keyboard;
-                }
-                if (capturing) ImGui::PopStyleColor(2);
-            }
-
-            // Col 2: controller binding
-            ImGui::TableSetColumnIndex(2);
-            {
-                const char* axis = kAxisLabels[i];
-                if (axis) {
-                    // Axis-controlled: informational only.
-                    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.65f, 0.70f, 0.78f, 1.0f));
-                    ImGui::TextUnformatted(axis);
-                    ImGui::PopStyleColor();
-                } else {
-                    const int ct = g_settings.bindings.actions[i].btn;
-                    char label[80];
-                    const bool capturing = g_capture_target == CaptureTarget::Controller &&
-                                           g_capture_action_idx == i;
-                    if (capturing) {
-                        snprintf(label, sizeof(label), "Press button...##ct%d", i);
-                        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.75f, 0.18f, 0.12f, 1.0f));
-                        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.90f, 0.25f, 0.18f, 1.0f));
-                    } else if (ct < 0) {
-                        snprintf(label, sizeof(label), "Unbound##ct%d", i);
-                    } else {
-                        snprintf(label, sizeof(label), "%s##ct%d", button_name(ct), i);
-                    }
-                    if (ImGui::Button(label, ImVec2(btnW, 0))) {
-                        g_capture_action_idx = i;
-                        g_capture_target = CaptureTarget::Controller;
-                    }
-                    if (capturing) ImGui::PopStyleColor(2);
-                }
-            }
+    const float w = std::max(900.0f, sw::width()), h = std::max(556.0f, sw::height());
+    const float side = 272, table = w - 60 - side;
+    const auto type = input_current_controller_type();
+    sw::begin_card("##mapping", 20, 20, table, h - 40);
+    sw::text(18, 14, "Button mapping", sw::Text, sw::Type::Label);
+    sw::text_right(table - 18, 17, "Select a binding. Esc cancels.");
+    const float actionW = std::min(170.0f, table * .27f);
+    const float cellW = (table - 36 - actionW - 20) / 2;
+    const float kbX = 18 + actionW + 10, padX = kbX + cellW + 10;
+    sw::line(0, 47, table);
+    sw::line(0, 77, table);
+    sw::caption(18, 55, "N64");
+    sw::caption(kbX, 55, "KEYBOARD");
+    sw::caption(padX, 55, "CONTROLLER");
+    sw::at(0, 78);
+    ImGui::BeginChild("##mapping-scroll", sw::px(table, sw::height() - 78), false,
+                      ImGuiWindowFlags_NavFlattened);
+    const char *labels[] = {"A button",   "B button",   "Z trigger",  "Start",       "L shoulder",
+                            "R shoulder", "C Up",       "C Down",     "C Left",      "C Right",
+                            "D-pad Up",   "D-pad Down", "D-pad Left", "D-pad Right", "Stick Up",
+                            "Stick Down", "Stick Left", "Stick Right"};
+    const char *directions[] = {"Up", "Down", "Left", "Right"};
+    float y = 4;
+    for (int i = 0; i < int(N64Action::Count); i++) {
+        if (i == 0 || i == 6 || i == 10 || i == 14) {
+            sw::caption(18, y + 7,
+                        i == 0    ? "BUTTONS"
+                        : i == 6  ? "C BUTTONS"
+                        : i == 10 ? "D-PAD"
+                                  : "ANALOG STICK",
+                        IM_COL32(127, 184, 108, 255));
+            y += 30;
         }
-        ImGui::EndTable();
+        ImGui::PushID(i);
+        sw::n64_glyph(i, 26, y + 4);
+        sw::text(65, y + 8, labels[i]);
+        const bool kbCapture = g_capture_target == CaptureTarget::Keyboard && g_capture_action_idx == i;
+        const int key = g_settings.bindings.actions[i].key;
+        const char *keyName = key < 0 ? "Unbound" : SDL_GetScancodeName(SDL_Scancode(key));
+        if (sw::button("key", kbCapture ? "Press a key..." : keyName, kbX, y + 3, cellW, 30, false,
+                       kbCapture)) {
+            g_capture_target = kbCapture ? CaptureTarget::None : CaptureTarget::Keyboard;
+            g_capture_action_idx = i;
+        }
+        const bool axis = i == 2 || (i >= 6 && i <= 9) || i >= 14;
+        if (axis) {
+            sw::at(padX, y + 3);
+            ImGui::Dummy(sw::px(cellW, 30));
+            help_tip("Analog input stays active alongside the keyboard binding.");
+            sw::axis_glyph(i, type, padX + 8, y + 4);
+            const char *dir = i == 2 ? "Trigger" : directions[i >= 14 ? i - 14 : i - 6];
+            sw::text(padX + 46, y + 9, dir, sw::Secondary, sw::Type::Small);
+            sw::text_right(padX + cellW - 7, y + 10, "AXIS", sw::Muted, sw::Type::Small);
+        } else {
+            const bool capture = g_capture_target == CaptureTarget::Controller && g_capture_action_idx == i;
+            const int binding = g_settings.bindings.actions[i].btn;
+            if (sw::button("pad",
+                           capture       ? "Press a button..."
+                           : binding < 0 ? "Unbound"
+                                         : "",
+                           padX, y + 3, cellW, 30, false, capture)) {
+                g_capture_target = capture ? CaptureTarget::None : CaptureTarget::Controller;
+                g_capture_action_idx = i;
+            }
+            if (!capture && binding >= 0)
+                sw::controller_glyph(binding, type, padX + (cellW - 26) / 2, y + 5);
+            help_tip(binding < 0 ? "Select to bind a controller button." : button_name(binding));
+        }
+        ImGui::PopID();
+        y += 36;
     }
+    sw::at(0, y + 10);
+    ImGui::Dummy(sw::px(1, 1));
+    ImGui::EndChild();
+    sw::end_card();
 
-    ImGui::Spacing();
-    if (ImGui::Button("Reset to defaults")) {
+    const float sideX = w - 20 - side;
+    sw::begin_card("##device", sideX, 20, side, 164);
+    sw::caption(16, 16, "CONTROLLER");
+    sw::gamepad(19, 47, 30);
+    const char *device = input_current_controller_name();
+    sw::paragraph(64, 43, side - 80, device ? device : "No controller", sw::Text);
+    sw::text(64, 84, device ? "Connected" : "Connect a controller", device ? sw::Accent : sw::Warning,
+             sw::Type::Small);
+    sw::paragraph(16, 119, side - 32, "Keyboard bindings stay active alongside the controller.");
+    sw::end_card();
+
+    sw::begin_card("##stick", sideX, 198, side, 252);
+    sw::caption(16, 16, "ANALOG STICK");
+    sw::text(16, 46, "Dead zone", sw::Text, sw::Type::Label);
+    char value[24];
+    snprintf(value, sizeof(value), "%.2f", g_settings.bindings.deadzone);
+    sw::badge(side - 16, 43, value);
+    if (sw::slider("##deadzone", 16, 77, side - 32, 24, g_settings.bindings.deadzone, 0, .5f))
+        g_settings.bindings.deadzone = std::round(g_settings.bindings.deadzone * 100) / 100;
+    sw::paragraph(16, 108, side - 32, "How far the stick must move before it counts. Default 0.15.");
+    sw::line(16, 151, side - 32);
+    sw::text(16, 174, "Invert horizontal (X)");
+    sw::toggle("##invert-x", side - 68, 168, g_settings.bindings.invert_x);
+    sw::text(16, 214, "Invert vertical (Y)");
+    sw::toggle("##invert-y", side - 68, 208, g_settings.bindings.invert_y);
+    sw::end_card();
+    if (sw::button("##reset", "Reset to defaults", sideX, h - 62, side, 42)) {
         input_bindings_reset_defaults(g_settings.bindings);
         g_capture_target = CaptureTarget::None;
     }
-    help_tip("Restore all keyboard and controller bindings to their factory defaults.");
-
-    ImGui::PopItemWidth();
 }
 
 void draw_audio_tab() {
-    heading("Audio");
-    ImGui::PushItemWidth(-1.0f);
-
-    // Work in 0..100 so SliderFloat can use "%.0f%%" as a live printf format.
-    // ImGui substitutes the current float value into the format string each
-    // frame — passing a pre-formatted string like "75%" freezes the display.
-    float volPct = audio_get_volume() * 100.0f;
-    bool muted   = audio_get_muted();
-
-    field_label("Master volume");
-    const float muteW  = ImGui::GetFontSize() * 4.5f;
-    const float spacing = ImGui::GetStyle().ItemSpacing.x;
-    ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - muteW - spacing);
-    if (ImGui::SliderFloat("##vol", &volPct, 0.0f, 100.0f,
-                           muted ? "Muted" : "%.0f%%")) {
-        audio_set_volume(volPct / 100.0f);
-        if (muted) { audio_set_muted(false); muted = false; }
+    const float w = std::max(520.0f, sw::width()), h = std::max(296.0f, sw::height());
+    sw::begin_card("##master-volume", 20, 20, w - 40, h - 40);
+    const float cardW = sw::width(), cardH = sw::height();
+    bool muted = audio_get_muted();
+    float volume = audio_get_volume() * 100;
+    sw::caption(18, 18, "MASTER VOLUME");
+    sw::text(18, 44, "Music, effects and voices share one volume.", sw::Muted, sw::Type::Small);
+    char value[12];
+    snprintf(value, sizeof(value), "%.0f", volume);
+    sw::text_right(cardW - 42, 8, value, muted ? sw::Muted : sw::AccentText, sw::Type::Number);
+    sw::text(cardW - 38, 37, "%", sw::AccentText, sw::Type::Label);
+    const float sliderY = cardH * .43f - 4;
+    bool changed = false;
+    if (sw::button("##volume-down", "-", 18, sliderY, 44, 44)) {
+        volume = std::max(0.0f, volume - 5);
+        changed = true;
     }
-    ImGui::SameLine();
-    if (ImGui::Button(muted ? "Unmute" : "Mute", ImVec2(muteW, 0))) {
-        audio_set_muted(!muted);
+    if (muted)
+        ImGui::PushStyleVar(ImGuiStyleVar_Alpha, .5f);
+    if (sw::slider("##volume", 76, sliderY, cardW - 152, 44, volume, 0, 100)) {
+        volume = std::round(volume);
+        changed = true;
     }
-
-    ImGui::Spacing();
-    field_desc("Music, effects and voices share one volume control.");
-
-    ImGui::PopItemWidth();
+    if (muted)
+        ImGui::PopStyleVar();
+    if (sw::button("##volume-up", "+", cardW - 62, sliderY, 44, 44)) {
+        volume = std::min(100.0f, volume + 5);
+        changed = true;
+    }
+    if (changed)
+        audio_set_volume(volume / 100);
+    sw::line(18, cardH - 81, cardW - 36);
+    sw::text(18, cardH - 65, "Mute", sw::Text, sw::Type::Label);
+    sw::text(18, cardH - 41, "Ctrl+M", sw::Muted, sw::Type::Small);
+    if (sw::toggle("##mute", cardW - 70, cardH - 60, muted, true))
+        audio_set_muted(muted);
+    sw::end_card();
 }
 
 void draw_display_tab() {
-    YoshiSettings& s = g_settings;
-    const YoshiSettings before = s;
-    if (ImGui::BeginTable("##video", 2, ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_PadOuterX)) {
-        ImGui::TableSetupColumn("Setting", ImGuiTableColumnFlags_WidthFixed, 160.0f * platform::window_scale(g_dialog_window));
-        ImGui::TableSetupColumn("Value", ImGuiTableColumnFlags_WidthStretch);
-        auto row = [](const char* label, const char* help) {
-            ImGui::TableNextRow(0, 44.0f * platform::window_scale(g_dialog_window));
-            ImGui::TableSetColumnIndex(0);
-            ImGui::AlignTextToFramePadding();
-            ImGui::TextUnformatted(label);
-            help_tip(help);
-            ImGui::TableSetColumnIndex(1);
-            ImGui::SetNextItemWidth(-1);
-        };
-        static const char* resNames[] = {"Native (320 x 240)", "Fit window", "2x (640 x 480)",
-            "3x (960 x 720)", "4x (1280 x 960)", "5x (1600 x 1200)",
-            "6x (1920 x 1440)", "8x (2560 x 1920)", "10x (3200 x 2400)"};
-        int res = resolution_index(s);
-        row("Resolution", "Fit window chooses the largest whole multiple of 240 lines that fits.");
-        if (ImGui::Combo("##resolution", &res, resNames, IM_ARRAYSIZE(resNames))) {
-            set_resolution_index(s, res);
-            if (s.resolution == YoshiSettings::Native) s.ssaa = 1;
-        }
-        const char* ssaaNames[] = {"Off", "2x", "3x", "4x", "5x"};
-        int ssaa = std::clamp(s.ssaa, 1, 5) - 1;
-        row("Supersampling", "Renders at a larger size and reduces it for smoother edges. Requires a fixed resolution.");
-        ImGui::BeginDisabled(s.resolution != YoshiSettings::Manual);
-        if (ImGui::Combo("##ssaa", &ssaa, ssaaNames, IM_ARRAYSIZE(ssaaNames))) s.ssaa = ssaa + 1;
-        ImGui::EndDisabled();
-        const char* msaaNames[] = {"Off", "2x", "4x", "8x"};
-        int pending = g_pending_msaa < 0 ? s.msaa : g_pending_msaa;
-        int msaa = pending >= 8 ? 3 : pending >= 4 ? 2 : pending >= 2 ? 1 : 0;
-        row("Anti-aliasing", "Smooths polygon edges. Changes apply after restarting the game.");
-        if (ImGui::Combo("##msaa", &msaa, msaaNames, IM_ARRAYSIZE(msaaNames)))
-            g_pending_msaa = msaa == 0 ? 0 : 1 << msaa;
-        const char* upNames[] = {"Original", "Scaled only", "All"};
-        row("Upscale 2D", "Choose which sprites and backgrounds use the higher rendering resolution.");
-        ImGui::Combo("##upscale", &s.upscale2D, upNames, IM_ARRAYSIZE(upNames));
-        const char* filters[] = {"Nearest", "Linear", "Pixel scaling"};
-        row("Output filter", "Controls how the image is scaled to the window.");
-        ImGui::Combo("##filter", &s.filter, filters, IM_ARRAYSIZE(filters));
-        row("CRT filter", "Adds scanlines and a color mask. F10 cycles the strength.");
-        ImGui::SliderFloat("##crt", &s.crt, 0, 1, s.crt <= 0 ? "Off" : "%.2f");
-        row("Overscan crop", "Hides pixels at each edge, like a TV. Two pixels is the default.");
-        ImGui::SliderInt("##crop", &s.crop, 0, 8, "%d px");
-        row("Window mode", "Borderless window keeps its size. F11 or Alt+Enter toggles fullscreen.");
-        int mode = int(s.window_mode());
-        if (ImGui::Combo("##windowmode", &mode, "Windowed\0Borderless window\0Borderless fullscreen\0"))
-            request_window_mode(WindowMode(mode));
-        ImGui::EndTable();
+    YoshiSettings &s = g_settings;
+    const auto before = s;
+    const float w = std::max(900.0f, sw::width()), h = std::max(580.0f, sw::height());
+    const float cardW = (w - 54) / 2, upperH = h - 244;
+    sw::begin_card("##display", 20, 20, cardW, upperH);
+    const float inner = cardW - 36;
+    sw::caption(18, 16, "DISPLAY");
+    sw::text(18, 48, "Window mode", sw::Text, sw::Type::Label);
+    // Preserve the separately requested borderless-window mode alongside fullscreen.
+    const char *modes[] = {"Windowed", "Borderless window", "Borderless fullscreen"};
+    int mode = int(s.window_mode());
+    if (sw::segments("##mode", 18, 76, inner, modes, 3, mode))
+        request_window_mode(WindowMode(mode));
+    help_tip("Fullscreen covers the entire monitor without borders. F11 or Alt+Enter toggles it.");
+    sw::text(18, 139, "Resolution", sw::Text, sw::Type::Label);
+    sw::text_right(cardW - 18, 142, "Internal render size");
+    const char *resolutions[] = {"Native (320 x 240)", "Fit window",       "2x (640 x 480)",
+                                 "3x (960 x 720)",     "4x (1280 x 960)",  "5x (1600 x 1200)",
+                                 "6x (1920 x 1440)",   "8x (2560 x 1920)", "10x (3200 x 2400)"};
+    int res = resolution_index(s);
+    if (sw::combo("##resolution", 18, 167, inner, res, resolutions, IM_ARRAYSIZE(resolutions))) {
+        set_resolution_index(s, res);
+        if (s.resolution == YoshiSettings::Native)
+            s.ssaa = 1;
     }
-    if (g_pending_msaa >= 0 && g_pending_msaa != s.msaa)
-        ImGui::TextColored(ImVec4(1, .70f, .24f, 1), "Anti-aliasing will change after restarting.");
-    if ((before.resolution != s.resolution || before.multiplier != s.multiplier ||
-         before.ssaa != s.ssaa || before.upscale2D != s.upscale2D || before.filter != s.filter) && g_app)
+    const bool fixed = s.resolution == YoshiSettings::Manual;
+    sw::text(18, 228, "Supersampling", fixed ? sw::Text : sw::Muted, sw::Type::Label);
+    sw::text_right(cardW - 18, 231, fixed ? "Renders larger, then shrinks" : "Needs a fixed resolution",
+                   fixed ? sw::Muted : sw::Warning);
+    const char *ssNames[] = {"Off", "2x", "3x", "4x", "5x"};
+    int ss = fixed ? std::clamp(s.ssaa, 1, 5) - 1 : 0;
+    ImGui::BeginDisabled(!fixed);
+    if (sw::combo("##ssaa", 18, 256, inner, ss, ssNames, 5))
+        s.ssaa = ss + 1;
+    ImGui::EndDisabled();
+    sw::end_card();
+
+    sw::begin_card("##image-quality", 34 + cardW, 20, cardW, upperH);
+    sw::caption(18, 16, "IMAGE QUALITY");
+    sw::text(18, 48, "Anti-aliasing", sw::Text, sw::Type::Label);
+    sw::text_right(cardW - 18, 51, "Smooths jagged edges");
+    const char *aaNames[] = {"Off", "2x", "4x", "8x"};
+    const int pending = g_pending_msaa < 0 ? s.msaa : g_pending_msaa;
+    int aa = pending >= 8 ? 3 : pending >= 4 ? 2 : pending >= 2 ? 1 : 0;
+    if (sw::segments("##aa", 18, 76, inner, aaNames, 4, aa))
+        g_pending_msaa = aa ? 1 << aa : 0;
+    sw::text(18, 139, "Upscale 2D", sw::Text, sw::Type::Label);
+    sw::text_right(cardW - 18, 142, "Sprites and backgrounds");
+    const char *upNames[] = {"Original", "Scaled only", "All"};
+    sw::segments("##upscale", 18, 167, inner, upNames, 3, s.upscale2D);
+    sw::text(18, 228, "Output filter", sw::Text, sw::Type::Label);
+    sw::text_right(cardW - 18, 231, "Scale to the window");
+    const char *filters[] = {"Nearest", "Linear", "Pixel scaling"};
+    sw::combo("##filter", 18, 256, inner, s.filter, filters, 3);
+    if (pending != g_active_msaa)
+        sw::text(18, 305, "Anti-aliasing applies after restarting.", sw::Warning, sw::Type::Small);
+    sw::end_card();
+
+    sw::begin_card("##effects", 20, h - 210, w - 40, 190);
+    sw::caption(18, 16, "EFFECTS");
+    const float effectW = (w - 40 - 36 - 28) / 2;
+    sw::text(18, 48, "CRT filter", sw::Text, sw::Type::Label);
+    sw::text_right(18 + effectW, 51, "F10 cycles in game");
+    const char *crtNames[] = {"Off", "0.25", "0.5", "1.0"};
+    const float strengths[] = {0, .25f, .5f, 1};
+    int crt = 0;
+    for (int i = 1; i < 4; i++)
+        if (std::fabs(s.crt - strengths[i]) < std::fabs(s.crt - strengths[crt]))
+            crt = i;
+    if (sw::segments("##crt", 18, 76, effectW, crtNames, 4, crt))
+        s.crt = strengths[crt];
+    const float cropX = 46 + effectW;
+    sw::text(cropX, 48, "Overscan crop", sw::Text, sw::Type::Label);
+    char cropLabel[16];
+    snprintf(cropLabel, sizeof(cropLabel), "%d px", s.crop);
+    sw::badge(w - 58, 44, cropLabel);
+    float crop = float(s.crop);
+    if (sw::slider("##crop", cropX, 76, effectW, 42, crop, 0, 16))
+        s.crop = int(std::round(crop));
+    sw::paragraph(18, 142, w - 76,
+                  "Overscan crop trims the screen edges where the original game drew stray pixels.");
+    sw::end_card();
+    if ((before.resolution != s.resolution || before.multiplier != s.multiplier || before.ssaa != s.ssaa ||
+         before.upscale2D != s.upscale2D || before.filter != s.filter) &&
+        g_app)
         apply_display_settings(g_app);
     if (before.crt != s.crt && g_app) {
         g_app->enhancementConfig.presentation.crtStrength = s.crt;
@@ -423,7 +419,52 @@ void draw_display_tab() {
     }
 }
 
+void draw_about_details();
 void draw_about_tab() {
+    const float w = std::max(600.0f, sw::width()), h = std::max(484.0f, sw::height());
+    if (g_about_details) {
+        sw::at(20, 20);
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, sw::px(18, 16));
+        ImGui::BeginChild("##credits", sw::px(w - 40, h - 40), true);
+        ImGui::PushTextWrapPos(0);
+        draw_about_details();
+        ImGui::PopTextWrapPos();
+        ImGui::EndChild();
+        ImGui::PopStyleVar();
+        return;
+    }
+    sw::begin_card("##about", 20, 20, w - 40, h - 40);
+    const float cw = sw::width();
+#ifdef _WIN32
+    sw::caption(18, 16, "NATIVE PC RECOMPILATION - WINDOWS VERSION", IM_COL32(127, 184, 108, 255));
+#else
+    sw::caption(18, 16, "NATIVE PC RECOMPILATION", IM_COL32(127, 184, 108, 255));
+#endif
+    sw::egg(18, 44, 40);
+    sw::text(70, 37, "Yoshi's Story Recomp", sw::Text, sw::Type::Title);
+    sw::text(18, 93, "Native static recompilation - N64Recomp + RT64", sw::Secondary, sw::Type::Small);
+    sw::badge(69, 123, "0.1.0");
+    sw::caption(18, 166, "PROJECTS");
+    const char *labels[] = {"Windows fork", "Original port", "RT64 renderer", "N64ModernRuntime"};
+    const char *urls[] = {"github.com/TK22-26/yoshis-story-recomp",
+                          "github.com/damobeanrod/yoshis-story-recomp", "github.com/rt64/rt64",
+                          "github.com/N64Recomp/N64ModernRuntime"};
+    const char *links[] = {"https://github.com/TK22-26/yoshis-story-recomp",
+                           "https://github.com/damobeanrod/yoshis-story-recomp",
+                           "https://github.com/rt64/rt64", "https://github.com/N64Recomp/N64ModernRuntime"};
+    for (int i = 0; i < 4; i++) {
+        const float y = 190 + i * 62;
+        if (sw::button(labels[i], "", 18, y, cw - 36, 54))
+            SDL_OpenURL(links[i]);
+        sw::project_icon(30, y + 11);
+        sw::text(74, y + 7, labels[i], sw::Text, sw::Type::Label);
+        sw::text(74, y + 30, urls[i], sw::Muted, sw::Type::Small);
+        sw::external_arrow(cw - 42, y + 22);
+    }
+    sw::end_card();
+}
+
+void draw_about_details() {
     heading("About");
     ImGui::TextUnformatted("Yoshi's Story Recomp");
     ImGui::TextDisabled("Native static recompilation using N64Recomp + RT64");
@@ -618,35 +659,72 @@ const char* page_title() {
     return titles[g_active];
 }
 
+bool same_settings(const YoshiSettings &a, const YoshiSettings &b) {
+    if (a.resolution != b.resolution || a.multiplier != b.multiplier || a.ssaa != b.ssaa ||
+        a.msaa != b.msaa || a.upscale2D != b.upscale2D || a.filter != b.filter || a.crt != b.crt ||
+        a.crop != b.crop || a.fullscreen != b.fullscreen || a.borderlessWindow != b.borderlessWindow ||
+        a.volume != b.volume || a.muted != b.muted || a.bindings.deadzone != b.bindings.deadzone ||
+        a.bindings.invert_x != b.bindings.invert_x || a.bindings.invert_y != b.bindings.invert_y)
+        return false;
+    for (int i = 0; i < int(N64Action::Count); i++)
+        if (a.bindings.actions[i].key != b.bindings.actions[i].key ||
+            a.bindings.actions[i].btn != b.bindings.actions[i].btn)
+            return false;
+    return true;
+}
+
 void draw_settings_contents() {
     ImGui::SetNextWindowPos(ImVec2(0, 0));
     ImGui::SetNextWindowSize(ImGui::GetIO().DisplaySize);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0);
-    ImGui::Begin("##native-settings", nullptr, ImGuiWindowFlags_NoDecoration |
-        ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings);
-    const float scale = platform::window_scale(g_dialog_window);
-    const float footer = ImGui::GetFrameHeightWithSpacing() + 10 * scale;
-    ImGui::BeginChild("##settings-content", ImVec2(0, -footer), false, ImGuiWindowFlags_NavFlattened);
-    if (g_focus_content.exchange(false)) ImGui::SetKeyboardFocusHere();
+    ImGui::Begin("##native-settings", nullptr,
+                 ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings |
+                     ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+    const float w = sw::width(), h = sw::height(), footerY = h - 60;
+    ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 0);
+    ImGui::BeginChild("##settings-content", sw::px(w, footerY), false,
+                      ImGuiWindowFlags_HorizontalScrollbar | ImGuiWindowFlags_NavFlattened);
+    ImGui::PopStyleVar();
+    if (g_focus_content.exchange(false))
+        ImGui::SetKeyboardFocusHere();
     switch (Page(g_active)) {
-        case Page::Display: draw_display_tab(); break;
-        case Page::Audio: draw_audio_tab(); break;
-        case Page::Controls: draw_controls_tab(); break;
-        case Page::About: draw_about_tab(); break;
-        default: break;
+    case Page::Display:
+        draw_display_tab();
+        break;
+    case Page::Audio:
+        draw_audio_tab();
+        break;
+    case Page::Controls:
+        draw_controls_tab();
+        break;
+    case Page::About:
+        draw_about_tab();
+        break;
+    default:
+        break;
     }
     ImGui::EndChild();
-    ImGui::Separator();
-    ImGui::AlignTextToFramePadding();
-    ImGui::TextDisabled("LB / RB: settings    B / Esc: close");
-    ImGui::SameLine(ImGui::GetWindowWidth() - ImGui::GetStyle().WindowPadding.x - 90 * scale);
-    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(.30f, .49f, .27f, 1));
-    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(.39f, .59f, .33f, 1));
-    if (ImGui::Button("Done", ImVec2(90 * scale, 0))) g_dialog_close.store(true);
-    ImGui::PopStyleColor(2);
+    const auto origin = ImGui::GetWindowPos();
+    ImGui::GetWindowDrawList()->AddRectFilled(ImVec2(origin.x, origin.y + footerY * sw::scale()),
+                                              ImVec2(origin.x + w * sw::scale(), origin.y + h * sw::scale()),
+                                              IM_COL32(16, 24, 18, 255));
+    sw::line(0, footerY, w);
+    if (Page(g_active) == Page::About) {
+        if (sw::button("##about-details", g_about_details ? "Back to overview" : "Credits & shortcuts", 20,
+                       footerY + 9, 166, 42))
+            g_about_details = !g_about_details;
+    } else if (g_dialog_save_failed) {
+        sw::text(20, footerY + 21, "Could not save settings", sw::Warning, sw::Type::Small);
+    } else if (g_dialog_saved) {
+        ImGui::RenderCheckMark(ImGui::GetWindowDrawList(),
+                               ImVec2(origin.x + 20 * sw::scale(), origin.y + (footerY + 24) * sw::scale()),
+                               sw::Accent, 12 * sw::scale());
+        sw::text(42, footerY + 21, "Changes saved", sw::Accent, sw::Type::Small);
+    }
+    if (sw::button("##done", "Done", w - 116, footerY + 9, 96, 42, true))
+        g_dialog_close.store(true);
     ImGui::End();
-    ImGui::PopStyleVar(2);
+    ImGui::PopStyleVar();
 }
 
 void close_settings_window() {
@@ -674,9 +752,26 @@ void close_settings_window() {
 }
 
 void show_settings_window(int page) {
+    const bool changing_page = g_active != page;
     g_active = page;
+    g_capture_target = CaptureTarget::None;
+    g_about_details = false;
+    const float scale = platform::window_scale(g_sdl_window);
+    static const ImVec2 sizes[] = {{960, 640}, {560, 356}, {960, 616}, {600, 544}};
+    static const ImVec2 minimums[] = {{760, 500}, {480, 320}, {760, 500}, {520, 460}};
+    SDL_Rect usable{};
+    if (SDL_GetDisplayUsableBounds(SDL_GetWindowDisplayIndex(g_sdl_window), &usable) != 0)
+        usable = {0, 0, int(1920 * scale), int(1080 * scale)};
+    const int width = std::min(int(sizes[page].x * scale), usable.w - 20);
+    const int height = std::min(int(sizes[page].y * scale), usable.h - int(64 * scale));
+    const int minWidth = std::min(width, int(minimums[page].x * scale));
+    const int minHeight = std::min(height, int(minimums[page].y * scale));
     if (g_dialog_window) {
         SDL_SetWindowTitle(g_dialog_window, page_title());
+        if (changing_page) {
+            SDL_SetWindowMinimumSize(g_dialog_window, minWidth, minHeight);
+            SDL_SetWindowSize(g_dialog_window, width, height);
+        }
         SDL_RaiseWindow(g_dialog_window);
         g_focus_content.store(true);
         return;
@@ -684,15 +779,20 @@ void show_settings_window(int page) {
     int x, y, w, h;
     SDL_GetWindowPosition(g_sdl_window, &x, &y);
     SDL_GetWindowSize(g_sdl_window, &w, &h);
-    const float scale = platform::window_scale(g_sdl_window);
-    const int width = int(700 * scale), height = int((Page(g_active) == Page::Audio ? 260 : 500) * scale);
-    g_dialog_window = SDL_CreateWindow(page_title(), x + (w-width)/2, y + (h-height)/2,
-        width, height, SDL_WINDOW_HIDDEN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI);
-    if (!g_dialog_window) { g_visible.store(false); return; }
-    SDL_SetWindowMinimumSize(g_dialog_window, int(560 * scale), int(260 * scale));
+    const int dialogX = std::clamp(x + (w - width) / 2, usable.x, usable.x + usable.w - width);
+    const int dialogY =
+        std::clamp(y + (h - height) / 2, usable.y + int(40 * scale), usable.y + usable.h - height);
+    g_dialog_window = SDL_CreateWindow(page_title(), dialogX, dialogY, width, height,
+                                       SDL_WINDOW_HIDDEN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI);
+    if (!g_dialog_window) {
+        g_visible.store(false);
+        return;
+    }
+    SDL_SetWindowMinimumSize(g_dialog_window, minWidth, minHeight);
     platform::set_dialog_owner(g_dialog_window, g_sdl_window);
     g_dialog_renderer = SDL_CreateRenderer(g_dialog_window, -1, SDL_RENDERER_ACCELERATED);
-    if (!g_dialog_renderer) g_dialog_renderer = SDL_CreateRenderer(g_dialog_window, -1, SDL_RENDERER_SOFTWARE);
+    if (!g_dialog_renderer)
+        g_dialog_renderer = SDL_CreateRenderer(g_dialog_window, -1, SDL_RENDERER_SOFTWARE);
     if (!g_dialog_renderer) {
         SDL_DestroyWindow(g_dialog_window);
         g_dialog_window = nullptr;
@@ -708,13 +808,12 @@ void show_settings_window(int page) {
         ScopedContext context(g_game_context);
         g_dialog_context = ImGui::CreateContext();
         ImGui::SetCurrentContext(g_dialog_context);
-        auto& io = ImGui::GetIO();
+        auto &io = ImGui::GetIO();
         io.IniFilename = nullptr;
         io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard | ImGuiConfigFlags_NavEnableGamepad;
         io.BackendFlags |= ImGuiBackendFlags_HasGamepad;
-        ui::apply_style(scale);
-        g_dialog_fonts.load(14);
-        io.FontDefault = g_dialog_fonts.at(scale);
+        g_dialog_fonts.load(scale);
+        settings_ui::begin_frame(scale, g_dialog_fonts);
         ImGui_ImplSDL2_InitForSDLRenderer(g_dialog_window, g_dialog_renderer);
         ImGui_ImplSDLRenderer2_Init(g_dialog_renderer);
     }
@@ -722,24 +821,52 @@ void show_settings_window(int page) {
     g_visible.store(true);
     g_focus_content.store(true);
     g_dialog_last_frame = 0;
+    g_dialog_saved = false;
+    g_dialog_save_failed = false;
+    g_saved_settings = g_settings;
+    if (g_pending_msaa >= 0)
+        g_saved_settings.msaa = g_pending_msaa;
+    g_last_settings_save = 0;
     SDL_ShowWindow(g_dialog_window);
     SDL_RaiseWindow(g_dialog_window);
 }
 
 void render_settings_window() {
-    if (!g_dialog_window) return;
+    if (!g_dialog_window)
+        return;
     const auto now = SDL_GetTicks64();
-    if (now - g_dialog_last_frame < 16) return;
+    if (now - g_dialog_last_frame < 16)
+        return;
     g_dialog_last_frame = now;
     std::scoped_lock lock(g_app->presentQueue->inspectorMutex);
     ScopedContext context(g_dialog_context);
     const float density = platform::window_scale(g_dialog_window);
-    ui::apply_style(density);
-    ImGui::GetIO().FontDefault = g_dialog_fonts.at(density);
+    if (g_dialog_fonts.loaded_scale != density) {
+        // This SDL renderer owns its atlas. Rebuild at the new monitor DPI
+        // instead of allocating every heading size at every DPI in one texture.
+        ImGui_ImplSDLRenderer2_DestroyFontsTexture();
+        ImGui::GetIO().Fonts->Clear();
+        g_dialog_fonts.load(density);
+    }
+    settings_ui::begin_frame(density, g_dialog_fonts);
     ImGui_ImplSDLRenderer2_NewFrame();
     ImGui_ImplSDL2_NewFrame();
     ImGui::NewFrame();
     draw_settings_contents();
+    auto values = g_settings;
+    if (g_pending_msaa >= 0)
+        values.msaa = g_pending_msaa;
+    if (!same_settings(values, g_saved_settings)) {
+        g_dialog_saved = false;
+        if ((!ImGui::IsAnyItemActive() && !g_dialog_save_failed) || now - g_last_settings_save >= 500) {
+            g_last_settings_save = now;
+            g_dialog_save_failed = !settings_save(g_settings_path, &values);
+            if (!g_dialog_save_failed) {
+                g_saved_settings = values;
+                g_dialog_saved = true;
+            }
+        }
+    }
     ImGui::Render();
     const auto scale = ImGui::GetIO().DisplayFramebufferScale;
     SDL_RenderSetScale(g_dialog_renderer, scale.x, scale.y);
@@ -781,6 +908,7 @@ void attach(RT64::Application& app) {
     g_app = &app;
     g_attached = true;
     g_pending_msaa = -1;
+    g_active_msaa = g_settings.msaa;
 }
 
 void detach(RT64::Application& app) {
@@ -869,6 +997,8 @@ bool handle_event(SDL_Event* event) {
         g_dialog_close.store(true);
         return true;
     }
+    if(dialogEvent && event->type==SDL_WINDOWEVENT && event->window.event==SDL_WINDOWEVENT_FOCUS_LOST)
+        g_capture_target=CaptureTarget::None;
 
     if (event->type == SDL_KEYDOWN && !event->key.repeat && event->key.keysym.scancode == SDL_SCANCODE_F1) {
         g_menu_visibility.store(menu_bar_visible() ? 0 : 1);
@@ -894,10 +1024,9 @@ bool handle_event(SDL_Event* event) {
         }
         if (event->type == SDL_CONTROLLERBUTTONDOWN) {
             const int btn = event->cbutton.button;
-            // Don't let the user accidentally bind an overlay control button.
-            const bool reserved = btn == SDL_CONTROLLER_BUTTON_BACK ||
-                                  btn == SDL_CONTROLLER_BUTTON_LEFTSHOULDER ||
-                                  btn == SDL_CONTROLLER_BUTTON_RIGHTSHOULDER;
+            // Back cancels capture. Shoulder buttons remain valid game bindings;
+            // capture takes precedence over their dialog page-navigation action.
+            const bool reserved = btn == SDL_CONTROLLER_BUTTON_BACK;
             if (!reserved && g_capture_target == CaptureTarget::Controller &&
                 g_capture_action_idx >= 0) {
                 g_settings.bindings.actions[g_capture_action_idx].btn = btn;
@@ -905,8 +1034,11 @@ bool handle_event(SDL_Event* event) {
             g_capture_target = CaptureTarget::None;
             return true;
         }
-        // Swallow all other events while waiting for a binding press.
-        return true;
+        // Keep mouse/focus events flowing so a different binding, Reset or Done
+        // can cancel capture, and ImGui does not retain stale pointer state.
+        if(event->type!=SDL_MOUSEMOTION && event->type!=SDL_MOUSEBUTTONDOWN &&
+            event->type!=SDL_MOUSEBUTTONUP && event->type!=SDL_MOUSEWHEEL && event->type!=SDL_WINDOWEVENT)
+            return true;
     }
 
     // Esc / Controller Back toggle settings and consume the event.
