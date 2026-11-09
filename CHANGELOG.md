@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.0.1 (unreleased)
+## 1.0.1
 
 - Replace the obsolete startup settings launcher with a native ROM picker.
 - Validate the complete USA ROM, accept z64/n64/v64 byte order, and keep a private

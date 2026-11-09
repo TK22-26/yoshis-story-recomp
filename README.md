@@ -3,9 +3,9 @@
 [![Windows checks](https://github.com/TK22-26/yoshis-story-recomp/actions/workflows/windows.yml/badge.svg?branch=main)](https://github.com/TK22-26/yoshis-story-recomp/actions/workflows/windows.yml)
 
 A native **Windows x64** recompilation of Yoshi's Story for Nintendo 64.
-**Version 1.0.1 is being prepared for the original USA ROM.** The 1.0.0 download
-was withdrawn because first launch lacked ROM selection. The replacement opens
-a native ROM picker and starts the game after selection. No developer tools or first-run compilation are needed.
+**Version 1.0.1 supports the original USA ROM.** Open the app, select your ROM
+in the native file picker, and play. No developer tools or first-run compilation
+are needed. This version replaces the withdrawn 1.0.0 download.
 
 [Windows downloads](https://github.com/TK22-26/yoshis-story-recomp/releases) |
 [Install and play](#getting-started-on-windows) | [Controls](#controls) |
@@ -66,7 +66,7 @@ retested.
 
 ## Getting started on Windows
 
-1. Once published, download `Yoshis-Story-1.0.1-windows-x64.zip` from the
+1. Download `Yoshis-Story-1.0.1-windows-x64.zip` from the
    [releases page](https://github.com/TK22-26/yoshis-story-recomp/releases).
 2. Extract the entire ZIP into a writable folder. Keep all DLLs beside
    `yoshis_story_recomp.exe`.
