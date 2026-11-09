@@ -56,10 +56,10 @@ list(SORT RT64_PATCHES)
 # applied already (a reverse check can fail once a later patch edits nearby
 # lines). After changing a patch: git -C rt64 checkout -- . and re-run cmake.
 foreach(RT64_PATCH ${RT64_PATCHES})
-    execute_process(COMMAND git apply --check "${RT64_PATCH}"
+    execute_process(COMMAND git apply --ignore-space-change --check "${RT64_PATCH}"
         WORKING_DIRECTORY "${RT64_PATH}" RESULT_VARIABLE RT64_PATCH_APPLIES OUTPUT_QUIET ERROR_QUIET)
     if(RT64_PATCH_APPLIES EQUAL 0)
-        execute_process(COMMAND git apply "${RT64_PATCH}"
+        execute_process(COMMAND git apply --ignore-space-change "${RT64_PATCH}"
             WORKING_DIRECTORY "${RT64_PATH}" RESULT_VARIABLE RT64_PATCH_RESULT)
         if(NOT RT64_PATCH_RESULT EQUAL 0)
             message(FATAL_ERROR "Failed to apply ${RT64_PATCH} to ${RT64_PATH}")
@@ -70,6 +70,8 @@ foreach(RT64_PATCH ${RT64_PATCHES})
     endif()
 endforeach()
 
+# Share the game-specific edge rule with RT64 and the standalone regression test.
+configure_file(src/yoshi_texture_bounds.h "${CMAKE_BINARY_DIR}/src/yoshi_texture_bounds.h" COPYONLY)
 add_subdirectory("${RT64_PATH}" rt64_build)
 
 add_subdirectory("${N64MR_PATH}/ultramodern" ultramodern_build)
@@ -223,3 +225,10 @@ target_link_libraries(yoshis_story_recomp PRIVATE
     SDL2::SDL2
     pthread
 )
+
+include(CTest)
+if(BUILD_TESTING)
+    add_executable(texture_bounds_test tests/texture_bounds_test.cpp)
+    target_include_directories(texture_bounds_test PRIVATE src)
+    add_test(NAME texture_bounds COMMAND texture_bounds_test)
+endif()
