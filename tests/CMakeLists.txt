@@ -20,3 +20,19 @@ add_test(NAME game_pause COMMAND game_pause_test)
 add_executable(texture_bounds_test texture_bounds_test.cpp)
 target_include_directories(texture_bounds_test PRIVATE ../src)
 add_test(NAME texture_bounds COMMAND texture_bounds_test)
+
+add_executable(input_bindings_test input_bindings_test.cpp)
+target_include_directories(input_bindings_test PRIVATE ../src)
+add_test(NAME input_bindings COMMAND input_bindings_test)
+
+# Also available without the ROM/runtime when the SDL development package is supplied.
+find_package(SDL2 2.26 QUIET)
+if(TARGET SDL2::SDL2)
+    add_executable(controller_devices_test controller_devices_test.cpp ../src/controller_devices.cpp)
+    target_compile_definitions(controller_devices_test PRIVATE SDL_MAIN_HANDLED)
+    target_include_directories(controller_devices_test PRIVATE ../src)
+    target_link_libraries(controller_devices_test PRIVATE SDL2::SDL2)
+    add_custom_command(TARGET controller_devices_test POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_FILE:SDL2::SDL2>" "$<TARGET_FILE_DIR:controller_devices_test>")
+    add_test(NAME controller_devices COMMAND controller_devices_test)
+endif()

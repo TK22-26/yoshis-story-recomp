@@ -10,7 +10,17 @@ jobs:
     runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
-      # This test is independent of the game and needs no ROM or game assets.
-      - run: cmake -S tests -B build-tests -A x64
+      # The virtual-controller test uses the same pinned SDL as the Windows build.
+      - name: Fetch SDL development package
+        shell: pwsh
+        run: |
+          $archive = Join-Path $env:RUNNER_TEMP 'SDL2.zip'
+          Invoke-WebRequest 'https://github.com/libsdl-org/SDL/releases/download/release-2.32.10/SDL2-devel-2.32.10-VC.zip' -OutFile $archive
+          if ((Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash -ne 'AF347939395A58B365846AAEA27391E69F9EC9D4DD650D6AC40802159B418A6E') {
+            throw 'SDL2 archive checksum mismatch'
+          }
+          Expand-Archive -LiteralPath $archive -DestinationPath $env:RUNNER_TEMP
+      # All checks are independent of the game and need no ROM or game assets.
+      - run: cmake -S tests -B build-tests -A x64 "-DSDL2_DIR=$env:RUNNER_TEMP/SDL2-2.32.10/cmake"
       - run: cmake --build build-tests --config Release
       - run: ctest --test-dir build-tests -C Release --output-on-failure

@@ -3,29 +3,8 @@
 #include <filesystem>
 #include <SDL.h>
 
-// N64 action identifiers for configurable input bindings.
-// Includes digital buttons and analog stick keyboard keys.
-enum class N64Action : int {
-    A = 0, B, Z, Start, L, R,
-    CUp, CDown, CLeft, CRight,
-    DUp, DDown, DLeft, DRight,
-    StickUp, StickDown, StickLeft, StickRight,
-    Count
-};
-
-// One keyboard key + one controller button bound to an N64 action.
-// Values are SDL_Scancode / SDL_GameControllerButton cast to int; -1 = unbound.
-struct N64Binding {
-    int key = -1;
-    int btn = -1;
-};
-
-struct InputBindings {
-    N64Binding actions[static_cast<int>(N64Action::Count)];
-    float deadzone = 0.15f;
-    bool invert_x  = false;
-    bool invert_y  = false;
-};
+#include "input_bindings.h"
+#include "controller_devices.h"
 
 // Populate b with the default bindings (WASD + controller Xbox layout).
 void input_bindings_reset_defaults(InputBindings& b);
@@ -51,7 +30,8 @@ struct YoshiSettings {
     bool muted = false;     // silences output without losing the volume level
     bool showLauncher = true;
     int launcherW = 0, launcherH = 0;   // launcher window size last time (0 = default)
-    InputBindings bindings;             // keyboard and controller button mappings
+    InputBindings bindings;             // keyboard, controller button and signed axis mappings
+    std::string controller;             // stable device key; empty = automatic
 
     WindowMode window_mode() const {
         return fullscreen ? WindowMode::BorderlessFullscreen :
@@ -98,6 +78,10 @@ void set_window_icon(SDL_Window* window);
 // Name of the currently connected game controller, or nullptr if none.
 const char* input_current_controller_name();
 SDL_GameControllerType input_current_controller_type();
+input::ControllerState input_current_controller_state();
+SDL_JoystickID input_current_controller_id();
+const std::vector<input::ControllerDevice>& input_controllers();
+void input_select_controller(const std::string& key);
 
 // Show the settings window. Saves on Start. Returns false if the user quit.
 bool run_launcher(const std::filesystem::path& settingsPath);

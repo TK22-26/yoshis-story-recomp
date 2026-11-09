@@ -334,10 +334,26 @@ game window. They pause the game until closed, preserving a manual pause.
 Video, Audio, Controls, and About use the supplied settings designs: rounded
 dark-green cards, segmented options, switches, and controller glyphs drawn in
 code. Settings use installed Segoe UI and Segoe UI Semibold on Windows, with
-no bundled fonts or images. Changes save while the dialog is open; anti-aliasing
+no bundled fonts. The controller card uses the supplied Xbox and DualSense
+diagrams, and About uses the project egg PNG and GitHub's official mark.
+Only these approved UI images are embedded; game assets remain excluded.
+Changes save while the dialog is open; anti-aliasing
 still requires a restart. Controls supports scrolling, keyboard/controller
-rebinding, and reset to defaults. About links to the projects and keeps the
+rebinding, and reset to defaults. Every controller cell accepts a button,
+trigger, or signed stick direction. Release held inputs before moving the
+desired control; Esc cancels. Rebinding replaces the previous controller
+assignment while keeping its keyboard key. Each action accepts only one
+controller input; R defaults to RB. Axis mappings and direction are
+saved with the other settings. About links to the projects and keeps the
 credits and shortcut list accessible from its footer.
+
+The Controls device dropdown lists the PC's connected gamepads. Selecting one
+switches both gameplay and settings navigation to that device and remembers
+the choice. Its diagram follows the controller type; the status dot sits
+directly below the dropdown. A selected device that disconnects stays selected
+until it returns, with keyboard input still available. **Automatic** uses an
+available controller. Devices that expose neither a serial number nor a stable
+path are remembered by player slot or enumeration order.
 
 The desktop menu uses JFG's compact 24 dp bar and 26 dp dropdown rows with a
 dark green, cream, and soft green palette. Windows uses an installed Segoe UI

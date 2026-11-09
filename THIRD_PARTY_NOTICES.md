@@ -21,3 +21,13 @@ The compact menu layout follows TK22-26's Jet Force Gemini project. Fonts are
 loaded from the operating system at runtime. The egg icon is original project
 art produced by `tools/gen_icon.py`. No game artwork, audio, textures, ROMs,
 personal saves, or bundled font files are included in the Windows package.
+
+The controller diagrams were supplied by TK22-26 for this interface. The About
+links use GitHub's unmodified white Invertocat from its official logo download,
+under the permitted use of linking to GitHub projects. GitHub's mark remains its
+trademark and does not indicate endorsement. Source and provenance are recorded
+in `assets/README.md`; see <https://brand.github.com/foundations/logo> and
+<https://docs.github.com/en/site-policy/other-site-policies/github-logo-policy>.
+
+Embedded SVGs use NanoSVG revision `239e102ec2c691f2902e20ace2ed36ee4a35cfe6`,
+under the zlib license retained in `licenses/NanoSVG.txt`.

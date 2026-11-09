@@ -47,6 +47,7 @@
 #include "overlay.h"
 #include "game_pause.h"
 #include "launcher.h"
+#include "version.h"
 
 // Pull in the generated section table from N64Recomp
 #include "recomp_overlays.inl"
@@ -793,9 +794,9 @@ static void update_gfx(void*) {
             request_fullscreen(!(SDL_GetWindowFlags(g_sdl_window) & SDL_WINDOW_FULLSCREEN));
             continue;
         }
-        // Route menu and owned-dialog events before sampling game controls.
-        if (overlay::handle_event(&e)) continue;
+        // Device hotplug must be handled even while a dialog consumes input.
         input_handle_event(e);
+        if (overlay::handle_event(&e)) continue;
         if (e.type == SDL_KEYDOWN && e.key.keysym.scancode == SDL_SCANCODE_F9 && !e.key.repeat) {
             g_dl_dump_request = true;
             fprintf(stderr, "[dl] F9: dumping the next display list\n");
@@ -940,47 +941,40 @@ namespace n64btn {
 static std::mutex g_input_mutex;
 static uint16_t g_input_buttons = 0;
 static float g_input_x = 0.0f, g_input_y = 0.0f;
-SDL_GameController* g_controller = nullptr;   // exposed for overlay::draw_controls_tab
+input::Controllers g_controllers;
 static std::atomic<bool> g_rumble_want{false};
 static bool g_rumble_on = false;
 
 const char* input_current_controller_name() {
-    return g_controller ? SDL_GameControllerName(g_controller) : nullptr;
+    auto* c = g_controllers.get();
+    return c ? SDL_GameControllerName(c) : nullptr;
 }
 
 SDL_GameControllerType input_current_controller_type() {
-    return g_controller ? SDL_GameControllerGetType(g_controller) : SDL_CONTROLLER_TYPE_UNKNOWN;
+    return g_controllers.get() ? SDL_GameControllerGetType(g_controllers.get()) : SDL_CONTROLLER_TYPE_UNKNOWN;
+}
+
+input::ControllerState input_current_controller_state() { return g_controllers.state(); }
+SDL_JoystickID input_current_controller_id() { return g_controllers.id(); }
+const std::vector<input::ControllerDevice>& input_controllers() { return g_controllers.devices(); }
+
+void input_select_controller(const std::string& key) {
+    // key can reference the device list, which refresh() rebuilds.
+    g_settings.controller = key;
+    g_controllers.refresh(g_settings.controller);
+    g_rumble_on = false;
 }
 
 static void input_open_controller() {
-    if (g_controller) return;
-    for (int i = 0; i < SDL_NumJoysticks(); i++) {
-        if (SDL_IsGameController(i) && (g_controller = SDL_GameControllerOpen(i))) {
-            fprintf(stderr, "[INPUT] controller: %s\n", SDL_GameControllerName(g_controller));
-            return;
-        }
-    }
+    g_controllers.refresh(g_settings.controller);
+    g_rumble_on = false;
+    if (const char* name = input_current_controller_name())
+        fprintf(stderr, "[INPUT] controller: %s\n", name);
 }
 
 static void input_handle_event(const SDL_Event& e) {
-    if (e.type == SDL_CONTROLLERDEVICEADDED) {
-        input_open_controller();
-    } else if (e.type == SDL_CONTROLLERDEVICEREMOVED && g_controller &&
-               e.cdevice.which == SDL_JoystickInstanceID(SDL_GameControllerGetJoystick(g_controller))) {
-        SDL_GameControllerClose(g_controller);
-        g_controller = nullptr;
-        g_rumble_on = false;
-        fprintf(stderr, "[INPUT] controller removed\n");
-        input_open_controller();
-    }
-}
-
-// Radial deadzone, rescaled so the stick still reaches full deflection.
-static void apply_deadzone(float& x, float& y, float dz) {
-    float m = sqrtf(x * x + y * y);
-    if (m < dz) { x = y = 0.0f; return; }
-    float k = std::min(1.0f, (m - dz) / (1.0f - dz)) / m;
-    x *= k; y *= k;
+    if (e.type == SDL_CONTROLLERDEVICEADDED || e.type == SDL_CONTROLLERDEVICEREMOVED ||
+        e.type == SDL_CONTROLLERDEVICEREMAPPED) input_open_controller();
 }
 
 static void input_sample() {
@@ -1001,7 +995,7 @@ static void input_sample() {
     const InputBindings& ib = g_settings.bindings;
     const Uint8* k = SDL_GetKeyboardState(nullptr);
     // Returns true if the scancode sc is bound and currently pressed.
-    auto kb = [&](int sc) { return sc >= 0 && k[static_cast<SDL_Scancode>(sc)]; };
+    auto kb = [&](int sc) { return sc >= 0 && sc < SDL_NUM_SCANCODES && k[static_cast<SDL_Scancode>(sc)]; };
     auto act = [&](N64Action a) -> const N64Binding& { return ib.actions[int(a)]; };
 
     // Keyboard
@@ -1027,38 +1021,12 @@ static void input_sample() {
     if (kb(act(N64Action::StickLeft).key)  || k[SDL_SCANCODE_LEFT])  x -= 1.0f;
     if (x != 0.0f && y != 0.0f) { x *= 0.7071f; y *= 0.7071f; }
 
-    // Game controller: digital buttons read from the binding table;
-    // Z and C-buttons stay axis-driven (right stick / triggers).
-    if (SDL_GameController* c = g_controller) {
-        auto cb = [c](int id) {
-            return id >= 0 && SDL_GameControllerGetButton(
-                c, static_cast<SDL_GameControllerButton>(id)) != 0;
-        };
-        auto ax = [c](SDL_GameControllerAxis id) {
-            return SDL_GameControllerGetAxis(c, id) / 32767.0f;
-        };
-        if (cb(act(N64Action::A).btn))      btn |= A;
-        if (cb(act(N64Action::B).btn))      btn |= B;
-        if (cb(act(N64Action::Start).btn))  btn |= START;
-        if (cb(act(N64Action::L).btn))      btn |= L;
-        if (cb(act(N64Action::R).btn))      btn |= R;
-        if (cb(act(N64Action::DUp).btn))    btn |= DU;
-        if (cb(act(N64Action::DDown).btn))  btn |= DD;
-        if (cb(act(N64Action::DLeft).btn))  btn |= DL;
-        if (cb(act(N64Action::DRight).btn)) btn |= DR;
-        // Axis-driven inputs: always active alongside any custom button binding.
-        if (ax(SDL_CONTROLLER_AXIS_TRIGGERLEFT)  > 0.3f) btn |= Z;
-        if (ax(SDL_CONTROLLER_AXIS_TRIGGERRIGHT) > 0.3f) btn |= R;
-        float rx = ax(SDL_CONTROLLER_AXIS_RIGHTX), ry = ax(SDL_CONTROLLER_AXIS_RIGHTY);
-        if (ry < -0.5f) btn |= CU;
-        if (ry > 0.5f)  btn |= CD;
-        if (rx < -0.5f) btn |= CL;
-        if (rx > 0.5f)  btn |= CR;
-        float lx = ax(SDL_CONTROLLER_AXIS_LEFTX), ly = -ax(SDL_CONTROLLER_AXIS_LEFTY);
-        if (ib.invert_x) lx = -lx;
-        if (ib.invert_y) ly = -ly;
-        apply_deadzone(lx, ly, ib.deadzone);
-        if (lx != 0.0f || ly != 0.0f) { x = lx; y = ly; }
+    // Every controller action, including triggers and stick directions, uses
+    // the saved binding table. Keyboard input remains available alongside it.
+    if (SDL_GameController* c = g_controllers.get()) {
+        const auto pad = input::sample_controller(ib, input_current_controller_state());
+        btn |= pad.buttons;
+        if (pad.x != 0 || pad.y != 0) { x = pad.x; y = pad.y; }
 
         // Rumble requested by the game thread; re-sent every 500 ms while on
         // because SDL rumble expires after the given duration.
@@ -1448,7 +1416,7 @@ int main(int argc, char** argv) {
     recomp::Configuration cfg{
         .argc = argc,
         .argv = argv,
-        .project_version = { 0, 1, 0 },
+        .project_version = { app_version::major, app_version::minor, app_version::patch },
         .rsp_callbacks = { .get_rsp_microcode = get_rsp_microcode },
         .renderer_callbacks = { .create_render_context = create_render_context },
         .audio_callbacks = {

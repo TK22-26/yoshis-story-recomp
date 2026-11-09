@@ -130,10 +130,11 @@ void text_right(float right, float y, const char *value, ImU32 color, Type type)
     auto *f = font(type);
     text(right - f->CalcTextSizeA(f->FontSize, FLT_MAX, 0, value).x / density, y, value, color, type);
 }
-void paragraph(float x, float y, float wrap, const char *value, ImU32 color) {
+float paragraph(float x, float y, float wrap, const char *value, ImU32 color) {
     auto *f = font(Type::Small);
     ImGui::GetWindowDrawList()->AddText(f, f->FontSize, point(x, y), ink(color), value, nullptr,
                                         wrap * density);
+    return f->CalcTextSizeA(f->FontSize, FLT_MAX, wrap * density, value).y / density;
 }
 void caption(float x, float y, const char *value, ImU32 color) {
     auto *f = font(Type::Small);
@@ -205,15 +206,30 @@ bool segments(const char *id, float x, float y, float w, const char *const *labe
     ImGui::PopID();
     return changed;
 }
-bool combo(const char *id, float x, float y, float w, int &selected, const char *const *labels, int count) {
+bool combo(const char *id, float x, float y, float w, int &selected, const char *const *labels, int count,
+           const char* preview, Type type) {
     at(x, y);
+    ImGui::PushFont(font(type));
     ImGui::SetNextItemWidth(w * density);
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, px(12, (40 - ImGui::GetFontSize() / density) / 2));
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, px(6, 6));
     ImGui::PushStyleColor(ImGuiCol_Border, rgba(FieldBorder));
-    const bool changed = ImGui::Combo(id, &selected, labels, count);
+    bool changed = false;
+    if (preview) {
+        ImGui::SetNextWindowSizeConstraints(px(std::max(w, 240.f), 0), ImVec2(460 * density, FLT_MAX));
+        if (ImGui::BeginCombo(id, preview)) {
+            for (int i = 0; i < count; ++i) {
+                ImGui::PushID(i);
+                if (ImGui::Selectable(labels[i], selected == i)) { selected = i; changed = true; }
+                if (selected == i) ImGui::SetItemDefaultFocus();
+                ImGui::PopID();
+            }
+            ImGui::EndCombo();
+        }
+    } else changed = ImGui::Combo(id, &selected, labels, count);
     ImGui::PopStyleColor();
     ImGui::PopStyleVar(2);
+    ImGui::PopFont();
     return changed;
 }
 bool slider(const char *id, float x, float y, float w, float h, float &value, float min, float max) {
@@ -251,13 +267,22 @@ bool toggle(const char *id, float x, float y, bool &value, bool warning) {
     ImGui::PopID();
     return changed;
 }
-void egg(float x, float y, float size) {
-    auto *d = ImGui::GetWindowDrawList();
-    d->AddEllipseFilled(point(x + size * .5f, y + size * .5f), size * .32f * density, size * .46f * density,
-                        ink(Text));
-    for (const auto p : {ImVec2(.38f, .22f), ImVec2(.62f, .40f), ImVec2(.34f, .62f), ImVec2(.58f, .79f)})
-        d->AddEllipseFilled(point(x + size * p.x, y + size * p.y), size * .10f * density,
-                            size * .12f * density, ink(IM_COL32(75, 157, 65, 255)));
+void image(SDL_Texture* texture, float x, float y, float w, float h) {
+    if (!texture) return;
+    int iw = 0, ih = 0;
+    if (SDL_QueryTexture(texture, nullptr, nullptr, &iw, &ih) != 0 || iw <= 0 || ih <= 0) return;
+    const float fit = std::min(w / iw, h / ih);
+    const float dw = iw * fit, dh = ih * fit;
+    x += (w - dw) / 2;
+    y += (h - dh) / 2;
+    ImGui::GetWindowDrawList()->AddImage((ImTextureID)texture, point(x, y), point(x + dw, y + dh),
+                                        ImVec2(0, 0), ImVec2(1, 1), ink(IM_COL32_WHITE));
+}
+void status(float x, float y, const char* label, bool connected) {
+    const auto color = connected ? Accent : Warning;
+    const float lineHeight = font(Type::Small)->FontSize / density;
+    ImGui::GetWindowDrawList()->AddCircleFilled(point(x + 3, y + lineHeight / 2), 3 * density, ink(color));
+    text(x + 13, y, label, color, Type::Small);
 }
 void gamepad(float x, float y, float size) {
     auto *d = ImGui::GetWindowDrawList();
@@ -277,16 +302,6 @@ void external_arrow(float x, float y) {
     d->AddLine(point(x, y + 10), point(x + 10, y), ink(Muted), 1.6f * density);
     d->AddLine(point(x + 3, y), point(x + 10, y), ink(Muted), 1.6f * density);
     d->AddLine(point(x + 10, y), point(x + 10, y + 7), ink(Muted), 1.6f * density);
-}
-void project_icon(float x, float y) {
-    rounded(x, y, 32, 32, IM_COL32(27, 39, 30, 255), 0, 8);
-    auto *d = ImGui::GetWindowDrawList();
-    // Source-branch symbol, drawn in code.
-    d->AddLine(point(x + 11, y + 10), point(x + 11, y + 24), ink(Secondary), 1.6f * density);
-    d->AddBezierCubic(point(x + 22, y + 10), point(x + 22, y + 17), point(x + 11, y + 13),
-                      point(x + 11, y + 20), ink(Secondary), 1.6f * density);
-    for (auto p : {ImVec2(11, 8), ImVec2(22, 8), ImVec2(11, 25)})
-        d->AddCircle(point(x + p.x, y + p.y), 2.6f * density, ink(Text), 12, 1.5f * density);
 }
 void n64_glyph(int action, float x, float y) {
     if (action >= 10 && action < 14) {
@@ -395,14 +410,16 @@ void controller_glyph(int button, SDL_GameControllerType type, float x, float y,
     }
     centered(x, y, size, size, label, Text, Type::Small);
 }
-void axis_glyph(int action, SDL_GameControllerType type, float x, float y) {
+void axis_glyph(int axis, SDL_GameControllerType type, float x, float y) {
     const bool ps = playstation(type);
-    if (action == 2) {
+    if (axis == SDL_CONTROLLER_AXIS_TRIGGERLEFT || axis == SDL_CONTROLLER_AXIS_TRIGGERRIGHT) {
+        const bool left = axis == SDL_CONTROLLER_AXIS_TRIGGERLEFT;
         rounded(x, y + 1, 32, 26, Field, FieldBorder, 7);
-        centered(x, y + 1, 32, 26, ps ? "L2" : "LT", Text, Type::Small);
+        centered(x, y + 1, 32, 26, ps ? (left ? "L2" : "R2") : (left ? "LT" : "RT"), Text, Type::Small);
         return;
     }
+    const bool left = axis == SDL_CONTROLLER_AXIS_LEFTX || axis == SDL_CONTROLLER_AXIS_LEFTY;
     rounded(x + 3, y, 26, 26, Field, FieldBorder, 13);
-    centered(x + 3, y, 26, 26, action >= 14 ? (ps ? "L" : "LS") : (ps ? "R" : "RS"), Text, Type::Small);
+    centered(x + 3, y, 26, 26, left ? (ps ? "L" : "LS") : (ps ? "R" : "RS"), Text, Type::Small);
 }
 } // namespace settings_ui

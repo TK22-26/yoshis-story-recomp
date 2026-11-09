@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(yoshis_story_recomp)
+project(yoshis_story_recomp VERSION 1.0.0)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED True)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -169,6 +169,8 @@ add_executable(yoshis_story_recomp
     "${CMAKE_CURRENT_SOURCE_DIR}/src/platform.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/ui_style.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/settings_widgets.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/ui_images.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/controller_devices.cpp"
     # Settings window shown before the game (Dear ImGui from RT64, drawn with
     # SDL_Renderer; RT64 itself only builds the Vulkan backend).
     "${CMAKE_CURRENT_SOURCE_DIR}/src/launcher.cpp"
@@ -177,6 +179,17 @@ add_executable(yoshis_story_recomp
     "${CMAKE_CURRENT_SOURCE_DIR}/src/overlay.cpp"
     "${RT64_PATH}/src/contrib/imgui/backends/imgui_impl_sdlrenderer2.cpp"
 )
+# Embed a fixed allowlist of approved UI artwork; no game assets are read here.
+set(UI_IMAGES_HEADER "${CMAKE_CURRENT_BINARY_DIR}/generated/ui_images_data.h")
+add_custom_command(OUTPUT "${UI_IMAGES_HEADER}"
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tools/embed_ui_images.py"
+        --output "${UI_IMAGES_HEADER}"
+    DEPENDS tools/embed_ui_images.py assets/icon.png assets/github-mark-white.svg
+        assets/controller-xbox.svg assets/controller-playstation.svg
+    VERBATIM)
+target_sources(yoshis_story_recomp PRIVATE "${UI_IMAGES_HEADER}")
+configure_file(src/version.h.in generated/version.h @ONLY)
+target_include_directories(yoshis_story_recomp PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
 # Build the audio recompiler with the same generator/toolchain, then generate
 # only into the build directory. Neither the ROM nor generated audio is shipped.
 set(YOSHI_ROM "${CMAKE_CURRENT_SOURCE_DIR}/data/yoshis_story.z64" CACHE FILEPATH "User-supplied US ROM")
@@ -302,5 +315,12 @@ if(WIN32)
         add_executable(texture_bounds_test tests/texture_bounds_test.cpp)
         target_include_directories(texture_bounds_test PRIVATE src)
         add_test(NAME texture_bounds COMMAND texture_bounds_test)
+        add_executable(input_bindings_test tests/input_bindings_test.cpp)
+        target_include_directories(input_bindings_test PRIVATE src)
+        add_test(NAME input_bindings COMMAND input_bindings_test)
+        add_executable(controller_devices_test tests/controller_devices_test.cpp src/controller_devices.cpp)
+        target_include_directories(controller_devices_test PRIVATE src)
+        target_link_libraries(controller_devices_test PRIVATE SDL2::SDL2)
+        add_test(NAME controller_devices COMMAND controller_devices_test)
     endif()
 endif()

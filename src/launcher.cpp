@@ -28,34 +28,25 @@ YoshiSettings g_settings;
 
 // --- Input bindings ---------------------------------------------------------
 
-static const char* const kActionSaveNames[] = {
-    "A", "B", "Z", "Start", "L", "R",
-    "CUp", "CDown", "CLeft", "CRight",
-    "DUp", "DDown", "DLeft", "DRight",
-    "StickUp", "StickDown", "StickLeft", "StickRight",
-};
-static_assert(sizeof(kActionSaveNames) / sizeof(kActionSaveNames[0]) ==
-              static_cast<int>(N64Action::Count), "kActionSaveNames size mismatch");
-
 void input_bindings_reset_defaults(InputBindings& b) {
     b.actions[int(N64Action::A)]          = { SDL_SCANCODE_SPACE,  SDL_CONTROLLER_BUTTON_A };
     b.actions[int(N64Action::B)]          = { SDL_SCANCODE_LSHIFT, SDL_CONTROLLER_BUTTON_X };
-    b.actions[int(N64Action::Z)]          = { SDL_SCANCODE_Z,      -1 };  // left trigger axis
+    b.actions[int(N64Action::Z)]          = { SDL_SCANCODE_Z,      -1, SDL_CONTROLLER_AXIS_TRIGGERLEFT, 1 };  // left trigger axis
     b.actions[int(N64Action::Start)]      = { SDL_SCANCODE_RETURN, SDL_CONTROLLER_BUTTON_START };
     b.actions[int(N64Action::L)]          = { SDL_SCANCODE_Q,      SDL_CONTROLLER_BUTTON_LEFTSHOULDER };
     b.actions[int(N64Action::R)]          = { SDL_SCANCODE_E,      SDL_CONTROLLER_BUTTON_RIGHTSHOULDER };
-    b.actions[int(N64Action::CUp)]        = { SDL_SCANCODE_I,      -1 };  // right stick Y-
-    b.actions[int(N64Action::CDown)]      = { SDL_SCANCODE_K,      -1 };  // right stick Y+
-    b.actions[int(N64Action::CLeft)]      = { SDL_SCANCODE_J,      -1 };  // right stick X-
-    b.actions[int(N64Action::CRight)]     = { SDL_SCANCODE_L,      -1 };  // right stick X+
+    b.actions[int(N64Action::CUp)]        = { SDL_SCANCODE_I,      -1, SDL_CONTROLLER_AXIS_RIGHTY, -1 };  // right stick Y-
+    b.actions[int(N64Action::CDown)]      = { SDL_SCANCODE_K,      -1, SDL_CONTROLLER_AXIS_RIGHTY, 1 };  // right stick Y+
+    b.actions[int(N64Action::CLeft)]      = { SDL_SCANCODE_J,      -1, SDL_CONTROLLER_AXIS_RIGHTX, -1 };  // right stick X-
+    b.actions[int(N64Action::CRight)]     = { SDL_SCANCODE_L,      -1, SDL_CONTROLLER_AXIS_RIGHTX, 1 };  // right stick X+
     b.actions[int(N64Action::DUp)]        = { SDL_SCANCODE_T,      SDL_CONTROLLER_BUTTON_DPAD_UP };
     b.actions[int(N64Action::DDown)]      = { SDL_SCANCODE_G,      SDL_CONTROLLER_BUTTON_DPAD_DOWN };
     b.actions[int(N64Action::DLeft)]      = { SDL_SCANCODE_F,      SDL_CONTROLLER_BUTTON_DPAD_LEFT };
     b.actions[int(N64Action::DRight)]     = { SDL_SCANCODE_H,      SDL_CONTROLLER_BUTTON_DPAD_RIGHT };
-    b.actions[int(N64Action::StickUp)]    = { SDL_SCANCODE_W,      -1 };  // left stick Y- (also: Up arrow)
-    b.actions[int(N64Action::StickDown)]  = { SDL_SCANCODE_S,      -1 };  // left stick Y+
-    b.actions[int(N64Action::StickLeft)]  = { SDL_SCANCODE_A,      -1 };  // left stick X-
-    b.actions[int(N64Action::StickRight)] = { SDL_SCANCODE_D,      -1 };  // left stick X+
+    b.actions[int(N64Action::StickUp)]    = { SDL_SCANCODE_W,      -1, SDL_CONTROLLER_AXIS_LEFTY, -1 };  // left stick Y- (also: Up arrow)
+    b.actions[int(N64Action::StickDown)]  = { SDL_SCANCODE_S,      -1, SDL_CONTROLLER_AXIS_LEFTY, 1 };  // left stick Y+
+    b.actions[int(N64Action::StickLeft)]  = { SDL_SCANCODE_A,      -1, SDL_CONTROLLER_AXIS_LEFTX, -1 };  // left stick X-
+    b.actions[int(N64Action::StickRight)] = { SDL_SCANCODE_D,      -1, SDL_CONTROLLER_AXIS_LEFTX, 1 };  // left stick X+
     b.deadzone = 0.15f;
     b.invert_x = false;
     b.invert_y = false;
@@ -111,6 +102,7 @@ void settings_load(const std::filesystem::path& path) {
         else if (key == "show_launcher") s.showLauncher = v != 0.0;
         else if (key == "launcher_width") s.launcherW = std::max(0, int(v));
         else if (key == "launcher_height") s.launcherH = std::max(0, int(v));
+        else if (key == "controller") s.controller = val;
         else if (key.rfind("bind.", 0) == 0) {
             const std::string rest = key.substr(5);
             if (rest == "deadzone") {
@@ -120,22 +112,11 @@ void settings_load(const std::filesystem::path& path) {
             } else if (rest == "invert_y") {
                 s.bindings.invert_y = v != 0.0;
             } else {
-                // Format: {ActionName}.{key|btn}
-                const auto dot = rest.rfind('.');
-                if (dot != std::string::npos) {
-                    const std::string aname = rest.substr(0, dot);
-                    const std::string field = rest.substr(dot + 1);
-                    for (int i = 0; i < int(N64Action::Count); i++) {
-                        if (aname == kActionSaveNames[i]) {
-                            if (field == "key") s.bindings.actions[i].key = int(v);
-                            else if (field == "btn") s.bindings.actions[i].btn = int(v);
-                            break;
-                        }
-                    }
-                }
+                input::load_binding(s.bindings, rest, int(v));
             }
         }
     }
+    input::normalize_bindings(g_settings.bindings);
 }
 
 bool settings_save(const std::filesystem::path& path, const YoshiSettings* values) {
@@ -162,13 +143,11 @@ bool settings_save(const std::filesystem::path& path, const YoshiSettings* value
         << "muted = " << (s.muted ? 1 : 0) << "\n"
         << "show_launcher = " << (s.showLauncher ? 1 : 0) << "\n"
         << "launcher_width = " << s.launcherW << "\n"
-        << "launcher_height = " << s.launcherH << "\n";
+        << "launcher_height = " << s.launcherH << "\n"
+        << "controller = " << s.controller << "\n";
     // Input bindings
-    out << "# Input bindings: SDL_Scancode for key, SDL_GameControllerButton for btn, -1 = unbound.\n";
-    for (int i = 0; i < int(N64Action::Count); i++) {
-        out << "bind." << kActionSaveNames[i] << ".key = " << s.bindings.actions[i].key << "\n"
-            << "bind." << kActionSaveNames[i] << ".btn = " << s.bindings.actions[i].btn << "\n";
-    }
+    out << "# Input bindings: SDL scancode, button, axis (-1 = unbound); axis_direction: -1 or 1.\n";
+    input::save_bindings(out, s.bindings);
     out << "bind.deadzone = " << s.bindings.deadzone << "\n"
         << "bind.invert_x = " << (s.bindings.invert_x ? 1 : 0) << "\n"
         << "bind.invert_y = " << (s.bindings.invert_y ? 1 : 0) << "\n";
