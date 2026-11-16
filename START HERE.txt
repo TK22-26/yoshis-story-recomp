@@ -1,4 +1,4 @@
-Yoshi's Story Recomp 1.0.1 - Windows x64
+Yoshi's Story Recomp 1.0.2 - Windows x64
 
 1. Extract the entire ZIP into a writable folder.
 2. Open yoshis_story_recomp.exe.
@@ -20,7 +20,12 @@ Only the USA ROM is supported. No ROM, extracted game assets, personal saves,
 recordings, generated source, or debug symbols are included.
 
 Controls menu: select your controller and rebind inputs.
-Esc / controller Back: settings. F1: show/hide the menu.
+Start + Back / Select together: in-game settings overlay (Esc or a Back tap also works).
+Desktop menu settings entries still open their own windows.
+LB / RB: tabs. D-pad / left stick: move. A: select / adjust. B: go back.
+Select a slider with A, adjust left/right, then A or B to finish. Changes save automatically.
+Quit in the settings footer asks for confirmation; B / Esc cancels.
+Start alone remains the game's Start button. F1: show/hide the menu.
 Pause: pause/resume. Ctrl+M: mute/unmute. Alt+F4: quit.
 F11 / Alt+Enter: toggle borderless fullscreen.
 

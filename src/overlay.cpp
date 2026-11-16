@@ -1,4 +1,5 @@
-// Desktop top menu and in-game settings, following the JFG launcher layout.
+// Desktop menu and unified settings. Longshot's local vk_menu.cpp informs the
+// tab strip, Start + Back shortcut, shoulder navigation and contextual Back.
 //
 // Pattern copied from ThatGuyMcd/DKR-R runtime_ui.cpp attach/detach/draw: we
 // construct our own RT64::Inspector, install it in app.presentQueue->inspector,
@@ -8,6 +9,7 @@
 
 #include "overlay.h"
 #include "game_pause.h"
+#include "settings_shortcut.h"
 
 #include <algorithm>
 #include <atomic>
@@ -19,9 +21,7 @@
 
 #include <SDL.h>
 #include "imgui.h"
-// PushItemFlag(ImGuiItemFlags_NoNav, ...) lives in the internal header in
-// ImGui 1.90 (promoted to public later). Used by the sidebar to lock the
-// D-pad / stick to the content panel; see draw_sidebar().
+// Navigation focus and contextual Back use ImGui 1.90's internal API.
 #include "imgui_internal.h"
 
 #include "hle/rt64_application.h"
@@ -47,6 +47,12 @@ RT64::Application* g_app = nullptr;   // only valid while g_attached is true
 ui::Fonts g_menu_fonts;
 settings_ui::Fonts g_dialog_fonts;
 ui_images::Textures g_dialog_images;
+settings_ui::Fonts g_overlay_fonts;
+ui_images::AtlasImages g_overlay_images;
+std::atomic<bool> g_ingame_visible{false};
+std::atomic<int> g_overlay_page_request{-1};
+ImVec2 g_overlay_pos, g_overlay_size;
+Uint64 g_game_last_frame = 0;
 float g_menu_scale = 1.0f;
 
 // Capture state for keyboard, button and signed axis rebinding.
@@ -54,6 +60,10 @@ enum class CaptureTarget { None, Keyboard, Controller };
 CaptureTarget g_capture_target = CaptureTarget::None;
 int g_capture_action_idx = -1;
 input::AxisCapture g_axis_capture;
+input::SettingsShortcut g_settings_shortcut;
+std::atomic<bool> g_shortcut_blocks_input{false};
+SDL_JoystickID g_navigation_controller = -1;
+input::ControllerState g_navigation_state;
 // Only implemented settings appear in the menu.
 enum class Page { Display, Audio, Controls, About, Count };
 int g_active = int(Page::Display); // Main-thread dialog state
@@ -82,6 +92,10 @@ bool g_dialog_saved = false;
 bool g_dialog_save_failed = false;
 YoshiSettings g_saved_settings;
 Uint64 g_last_settings_save = 0;
+std::string g_focused_help;
+bool g_quit_confirmation = false;
+bool g_cancel_quit = false;
+constexpr const char* kQuitPopup = "##confirm-quit";
 
 constexpr double kMultipliers[] = { 2, 3, 4, 5, 6, 8, 10 };
 constexpr int kMultiplierCount = int(sizeof(kMultipliers) / sizeof(kMultipliers[0]));
@@ -113,10 +127,6 @@ void feed_controller_to_imgui(const SDL_Event& e) {
         const bool down = e.type == SDL_CONTROLLERBUTTONDOWN;
         ImGuiKey key = ImGuiKey_None;
         switch (e.cbutton.button) {
-            case SDL_CONTROLLER_BUTTON_DPAD_UP:        key = ImGuiKey_GamepadDpadUp; break;
-            case SDL_CONTROLLER_BUTTON_DPAD_DOWN:      key = ImGuiKey_GamepadDpadDown; break;
-            case SDL_CONTROLLER_BUTTON_DPAD_LEFT:      key = ImGuiKey_GamepadDpadLeft; break;
-            case SDL_CONTROLLER_BUTTON_DPAD_RIGHT:     key = ImGuiKey_GamepadDpadRight; break;
             case SDL_CONTROLLER_BUTTON_A:              key = ImGuiKey_GamepadFaceDown; break;
             case SDL_CONTROLLER_BUTTON_B:              key = ImGuiKey_GamepadFaceRight; break;
             case SDL_CONTROLLER_BUTTON_X:              key = ImGuiKey_GamepadFaceLeft; break;
@@ -126,20 +136,23 @@ void feed_controller_to_imgui(const SDL_Event& e) {
             default: break;
         }
         if (key != ImGuiKey_None) io.AddKeyEvent(key, down);
-    } else if (e.type == SDL_CONTROLLERAXISMOTION) {
-        const float v = e.caxis.value / 32767.0f;
-        if (e.caxis.axis == SDL_CONTROLLER_AXIS_LEFTX) {
-            io.AddKeyEvent(ImGuiKey_GamepadLStickLeft,  v < -0.3f);
-            io.AddKeyEvent(ImGuiKey_GamepadLStickRight, v > 0.3f);
-        } else if (e.caxis.axis == SDL_CONTROLLER_AXIS_LEFTY) {
-            io.AddKeyEvent(ImGuiKey_GamepadLStickUp,    v < -0.3f);
-            io.AddKeyEvent(ImGuiKey_GamepadLStickDown,  v > 0.3f);
-        }
     }
+    if (e.type != SDL_CONTROLLERBUTTONDOWN && e.type != SDL_CONTROLLERBUTTONUP &&
+        e.type != SDL_CONTROLLERAXISMOTION) return;
+    // ImGui 1.90 uses its LStick keys only to scroll, not to move focus. Merge
+    // the physical stick and D-pad into navigation keys; releasing either must
+    // not cancel a direction still held on the other.
+    const auto& s = g_navigation_state;
+    io.AddKeyEvent(ImGuiKey_GamepadDpadLeft, s.buttons[SDL_CONTROLLER_BUTTON_DPAD_LEFT] || s.axes[SDL_CONTROLLER_AXIS_LEFTX] < -.3f);
+    io.AddKeyEvent(ImGuiKey_GamepadDpadRight, s.buttons[SDL_CONTROLLER_BUTTON_DPAD_RIGHT] || s.axes[SDL_CONTROLLER_AXIS_LEFTX] > .3f);
+    io.AddKeyEvent(ImGuiKey_GamepadDpadUp, s.buttons[SDL_CONTROLLER_BUTTON_DPAD_UP] || s.axes[SDL_CONTROLLER_AXIS_LEFTY] < -.3f);
+    io.AddKeyEvent(ImGuiKey_GamepadDpadDown, s.buttons[SDL_CONTROLLER_BUTTON_DPAD_DOWN] || s.axes[SDL_CONTROLLER_AXIS_LEFTY] > .3f);
 }
 
 void help_tip(const char* text) {
-    if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip | ImGuiHoveredFlags_AllowWhenDisabled)) {
+    if (ImGui::IsItemFocused()) g_focused_help = text;
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip | ImGuiHoveredFlags_AllowWhenDisabled |
+                             ImGuiHoveredFlags_NoNavOverride)) {
         ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, settings_ui::px(12, 8));
         ImGui::BeginTooltip();
         ImGui::PushTextWrapPos(ImGui::GetFontSize() * 30.0f);
@@ -183,13 +196,23 @@ static const char* button_name(int btn) {
 
 namespace sw = settings_ui;
 
+void settings_image(SDL_Texture* native, const ui_images::AtlasImage& atlas, float x, float y, float w, float h) {
+    if (g_ingame_visible.load()) sw::image(atlas, x, y, w, h);
+    else sw::image(native, x, y, w, h);
+}
+
+void request_settings_page(int page) {
+    if (g_ingame_visible.load()) g_overlay_page_request.store(page);
+    else g_page_request.store(page);
+}
+
 void draw_controls_tab() {
     const float w = std::max(900.0f, sw::width()), h = std::max(556.0f, sw::height());
     const float side = 296, table = w - 60 - side;
     const auto type = input_current_controller_type();
     sw::begin_card("##mapping", 20, 20, table, h - 40);
     sw::text(18, 14, "Button mapping", sw::Text, sw::Type::Label);
-    sw::text_right(table - 18, 17, "Select a binding. Esc cancels.");
+    sw::text_right(table - 18, 17, "Select a binding. Back / Esc cancels.");
     const float actionW = std::min(170.0f, table * .27f);
     const float cellW = (table - 36 - actionW - 20) / 2;
     const float kbX = 18 + actionW + 10, padX = kbX + cellW + 10;
@@ -282,7 +305,8 @@ void draw_controls_tab() {
     const char *device = input_current_controller_name();
     const auto selectedType = input_current_controller_type();
     const bool ps = selectedType == SDL_CONTROLLER_TYPE_PS3 || selectedType == SDL_CONTROLLER_TYPE_PS4 || selectedType == SDL_CONTROLLER_TYPE_PS5;
-    if (device) sw::image(ps ? g_dialog_images.playstation : g_dialog_images.xbox, 16, 43, 64, 60);
+    if (device) settings_image(ps ? g_dialog_images.playstation : g_dialog_images.xbox,
+                              ps ? g_overlay_images.playstation : g_overlay_images.xbox, 16, 43, 64, 60);
     else sw::gamepad(24, 49, 48);
     sw::status(88, 87, device ? "Connected" : "Disconnected", device != nullptr);
     sw::paragraph(16, 119, side - 32, "Keyboard bindings stay active alongside the controller.");
@@ -448,7 +472,10 @@ void draw_about_tab() {
     if (g_about_details) {
         sw::at(20, 20);
         ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, sw::px(18, 16));
+        // This text-only page needs its own navigation focus so D-pad/stick
+        // scrolls it instead of moving among the shell's tabs and buttons.
         ImGui::BeginChild("##credits", sw::px(w - 40, h - 40), true);
+        if (ImGui::IsWindowAppearing()) ImGui::SetWindowFocus();
         ImGui::PushTextWrapPos(0);
         draw_about_details();
         ImGui::PopTextWrapPos();
@@ -463,7 +490,7 @@ void draw_about_tab() {
 #else
     sw::caption(18, 16, "NATIVE PC RECOMPILATION", IM_COL32(127, 184, 108, 255));
 #endif
-    sw::image(g_dialog_images.egg, 18, 44, 40, 40);
+    settings_image(g_dialog_images.egg, g_overlay_images.egg, 18, 44, 40, 40);
     sw::text(70, 37, "Yoshi's Story Recomp", sw::Text, sw::Type::Title);
     sw::text(18, 93, "Native static recompilation - N64Recomp + RT64", sw::Secondary, sw::Type::Small);
     sw::badge(69, 123, app_version::string);
@@ -479,7 +506,7 @@ void draw_about_tab() {
         const float y = 190 + i * 62;
         if (sw::button(labels[i], "", 18, y, cw - 36, 54))
             SDL_OpenURL(links[i]);
-        sw::image(g_dialog_images.github, 34, y + 15, 24, 24);
+        settings_image(g_dialog_images.github, g_overlay_images.github, 34, y + 15, 24, 24);
         sw::text(74, y + 7, labels[i], sw::Text, sw::Type::Label);
         sw::text(74, y + 30, urls[i], sw::Muted, sw::Type::Small);
         sw::external_arrow(cw - 42, y + 22);
@@ -501,7 +528,10 @@ void draw_about_details() {
 
     heading("In-game shortcuts");
     ImGui::BulletText("F1 - hide or show the menu bar");
-    ImGui::BulletText("Esc / Controller Back - open or close settings");
+    ImGui::BulletText("Start + Back / Esc - open or close settings (Back tap also works)");
+    ImGui::BulletText("LB / RB - previous / next settings tab");
+    ImGui::BulletText("D-pad / left stick - move; A - select; B - back");
+    ImGui::BulletText("A on a slider - adjust with left / right; A or B - finish");
     ImGui::BulletText("F10 - cycle CRT filter (off / 0.25 / 0.5 / 1.0)");
     ImGui::BulletText("F11 or Alt+Enter - toggle fullscreen");
     ImGui::BulletText("Pause - pause or resume the game");
@@ -677,12 +707,6 @@ void draw_menu_bar() {
     ImGui::PopStyleVar(3);
 }
 
-const char* page_title() {
-    static const char* titles[] = {"Video settings - Yoshi's Story", "Audio settings - Yoshi's Story",
-        "Controller mapping - Yoshi's Story", "About Yoshi's Story"};
-    return titles[g_active];
-}
-
 bool same_settings(const YoshiSettings &a, const YoshiSettings &b) {
     if (a.resolution != b.resolution || a.multiplier != b.multiplier || a.ssaa != b.ssaa ||
         a.msaa != b.msaa || a.upscale2D != b.upscale2D || a.filter != b.filter || a.crt != b.crt ||
@@ -700,20 +724,67 @@ bool same_settings(const YoshiSettings &a, const YoshiSettings &b) {
     return true;
 }
 
+void draw_quit_confirmation(bool playstation) {
+    ImGui::SetNextWindowPos(ImVec2(ImGui::GetIO().DisplaySize.x * .5f,
+                                 ImGui::GetIO().DisplaySize.y * .5f), ImGuiCond_Always, ImVec2(.5f, .5f));
+    ImGui::SetNextWindowSize(sw::px(440, 216));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 14 * sw::scale());
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1 * sw::scale());
+    if (ImGui::BeginPopupModal(kQuitPopup, nullptr,
+            ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings)) {
+        sw::text(24, 18, "Quit game?", sw::Text, sw::Type::Title);
+        sw::paragraph(24, 66, 392, "Are you sure you want to quit to desktop?\n"
+                                  "Progress since the game's last save will be lost.", sw::Secondary);
+        if (ImGui::IsWindowAppearing()) sw::focus_next_control();
+        if (sw::button("##cancel-quit", "Cancel", 24, 134, 180, 42) || g_cancel_quit)
+            ImGui::CloseCurrentPopup();
+        if (sw::button("##confirm-quit-button", "Quit game", 236, 134, 180, 42, true)) {
+            ImGui::CloseCurrentPopup();
+            g_menu_action.store(2);
+        }
+        sw::text(24, 190, playstation ? "Cross: Select    Circle / Esc: Cancel" : "A: Select    B / Esc: Cancel",
+                 sw::Muted, sw::Type::Small);
+        ImGui::EndPopup();
+    }
+    ImGui::PopStyleVar(2);
+    g_cancel_quit = false;
+    g_quit_confirmation = ImGui::IsPopupOpen(kQuitPopup);
+}
+
 void draw_settings_contents() {
-    ImGui::SetNextWindowPos(ImVec2(0, 0));
-    ImGui::SetNextWindowSize(ImGui::GetIO().DisplaySize);
+    g_focused_help.clear();
+    const bool ingame = g_ingame_visible.load();
+    if (ingame)
+        ImGui::GetBackgroundDrawList()->AddRectFilled(ImVec2(0, 0), ImGui::GetIO().DisplaySize, IM_COL32(0, 0, 0, 160));
+    ImGui::SetNextWindowPos(ingame ? g_overlay_pos : ImVec2(0, 0));
+    ImGui::SetNextWindowSize(ingame ? g_overlay_size : ImGui::GetIO().DisplaySize);
+    ImGui::SetNextWindowBgAlpha(ingame ? .97f : 1.0f);
+    // Navigation scrolls the content/list, while the title, tabs and footer stay fixed.
+    ImGui::SetNextWindowScroll(ImVec2(0, 0));
     ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0);
     ImGui::Begin("##native-settings", nullptr,
                  ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings |
                      ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
-    const float w = sw::width(), h = sw::height(), footerY = h - 60;
+    const float w = sw::width(), h = sw::height(), headerH = 108, footerY = h - 88;
+    sw::text(24, 12, "Settings", sw::Text, sw::Type::Title);
+    sw::text_right(w - 24, 27, "YOSHI'S STORY  /  GAME PAUSED");
+    const auto controllerType = input_current_controller_type();
+    sw::text(24, 59, "LB", sw::Text, sw::Type::Title);
+    sw::text_right(w - 24, 59, "RB", sw::Text, sw::Type::Title);
+    const char* pages[] = {"Video", "Audio", "Controls", "About"};
+    int page = g_active;
+    if (sw::segments("##settings-tabs", 80, 57, w - 160, pages, int(Page::Count), page) && page != g_active)
+        request_settings_page(page);
+    sw::line(0, headerH, w);
+    sw::at(0, headerH);
     ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 0);
-    ImGui::BeginChild("##settings-content", sw::px(w, footerY), false,
+    // A separate child per page keeps scroll offsets and item IDs independent.
+    ImGui::PushID(g_active);
+    ImGui::BeginChild("##settings-content", sw::px(w, footerY - headerH), false,
                       ImGuiWindowFlags_HorizontalScrollbar | ImGuiWindowFlags_NavFlattened);
     ImGui::PopStyleVar();
     if (g_focus_content.exchange(false))
-        ImGui::SetKeyboardFocusHere();
+        sw::focus_next_control();
     switch (Page(g_active)) {
     case Page::Display:
         draw_display_tab();
@@ -731,6 +802,7 @@ void draw_settings_contents() {
         break;
     }
     ImGui::EndChild();
+    ImGui::PopID();
     const auto origin = ImGui::GetWindowPos();
     ImGui::GetWindowDrawList()->AddRectFilled(ImVec2(origin.x, origin.y + footerY * sw::scale()),
                                               ImVec2(origin.x + w * sw::scale(), origin.y + h * sw::scale()),
@@ -742,19 +814,38 @@ void draw_settings_contents() {
             g_about_details = !g_about_details;
     } else if (g_dialog_save_failed) {
         sw::text(20, footerY + 21, "Could not save settings", sw::Warning, sw::Type::Small);
+    } else if (!g_focused_help.empty()) {
+        sw::paragraph(20, footerY + 12, w - 360, g_focused_help.c_str(), sw::Secondary);
     } else if (g_dialog_saved) {
         ImGui::RenderCheckMark(ImGui::GetWindowDrawList(),
                                ImVec2(origin.x + 20 * sw::scale(), origin.y + (footerY + 24) * sw::scale()),
                                sw::Accent, 12 * sw::scale());
         sw::text(42, footerY + 21, "Changes saved", sw::Accent, sw::Type::Small);
     }
-    if (sw::button("##done", "Done", w - 116, footerY + 9, 96, 42, true))
+    const bool capturing = g_capture_target != CaptureTarget::None;
+    const bool ps = controllerType == SDL_CONTROLLER_TYPE_PS3 || controllerType == SDL_CONTROLLER_TYPE_PS4 ||
+                    controllerType == SDL_CONTROLLER_TYPE_PS5;
+    sw::text(20, footerY + 62, capturing ? "Release held inputs, then press / move a control. Back / Esc cancels." :
+        ps ? "D-pad / stick: Move    Cross: Select / adjust    Circle: Back" :
+             "D-pad / stick: Move    A: Select / adjust    B: Back",
+        capturing ? sw::Warning : sw::Secondary, sw::Type::Small);
+    if (!g_dialog_saved && !g_dialog_save_failed && g_focused_help.empty() && Page(g_active) != Page::About)
+        sw::text(20, footerY + 21, "Changes save automatically", sw::Muted, sw::Type::Small);
+    if (sw::button("##quit", "Quit", w - 320, footerY + 9, 120, 42)) {
+        g_capture_target = CaptureTarget::None;
+        ImGui::GetIO().ClearInputKeys();
+        ImGui::OpenPopup(kQuitPopup);
+        g_quit_confirmation = true;
+    }
+    if (sw::button("##done", "Return to game", w - 186, footerY + 9, 166, 42, true))
         g_dialog_close.store(true);
+    draw_quit_confirmation(ps);
     ImGui::End();
     ImGui::PopStyleVar();
 }
 
 void close_settings_window() {
+    g_quit_confirmation = g_cancel_quit = false;
     if (!g_dialog_window) { g_visible.store(false); return; }
     {
         std::scoped_lock lock(g_app->presentQueue->inspectorMutex);
@@ -780,27 +871,24 @@ void close_settings_window() {
 }
 
 void show_settings_window(int page) {
-    const bool changing_page = g_active != page;
     g_active = page;
     g_capture_target = CaptureTarget::None;
     g_about_details = false;
     const float scale = platform::window_scale(g_sdl_window);
-    static const ImVec2 sizes[] = {{960, 640}, {560, 356}, {960, 616}, {600, 544}};
-    static const ImVec2 minimums[] = {{760, 500}, {480, 320}, {760, 500}, {520, 460}};
     SDL_Rect usable{};
     if (SDL_GetDisplayUsableBounds(SDL_GetWindowDisplayIndex(g_sdl_window), &usable) != 0)
         usable = {0, 0, int(1920 * scale), int(1080 * scale)};
-    const int width = std::min(int(sizes[page].x * scale), usable.w - 20);
-    const int height = std::min(int(sizes[page].y * scale), usable.h - int(64 * scale));
-    const int minWidth = std::min(width, int(minimums[page].x * scale));
-    const int minHeight = std::min(height, int(minimums[page].y * scale));
+    const int width = std::min(int(1040 * scale), usable.w - 20);
+    const int height = std::min(int(800 * scale), usable.h - int(64 * scale));
+    const int minWidth = std::min(width, int(760 * scale));
+    const int minHeight = std::min(height, int(560 * scale));
     if (g_dialog_window) {
-        SDL_SetWindowTitle(g_dialog_window, page_title());
-        if (changing_page) {
-            SDL_SetWindowMinimumSize(g_dialog_window, minWidth, minHeight);
-            SDL_SetWindowSize(g_dialog_window, width, height);
+        {
+            std::scoped_lock lock(g_app->presentQueue->inspectorMutex);
+            ScopedContext context(g_dialog_context);
+            ImGui::ClosePopupsOverWindow(nullptr, false);
+            ImGui::ClearActiveID();
         }
-        SDL_RaiseWindow(g_dialog_window);
         g_focus_content.store(true);
         return;
     }
@@ -810,7 +898,7 @@ void show_settings_window(int page) {
     const int dialogX = std::clamp(x + (w - width) / 2, usable.x, usable.x + usable.w - width);
     const int dialogY =
         std::clamp(y + (h - height) / 2, usable.y + int(40 * scale), usable.y + usable.h - height);
-    g_dialog_window = SDL_CreateWindow(page_title(), dialogX, dialogY, width, height,
+    g_dialog_window = SDL_CreateWindow("Settings - Yoshi's Story", dialogX, dialogY, width, height,
                                        SDL_WINDOW_HIDDEN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI);
     if (!g_dialog_window) {
         g_visible.store(false);
@@ -859,6 +947,98 @@ void show_settings_window(int page) {
     SDL_RaiseWindow(g_dialog_window);
 }
 
+void save_settings_changes() {
+    const auto now = SDL_GetTicks64();
+    auto values = g_settings;
+    if (g_pending_msaa >= 0) values.msaa = g_pending_msaa;
+    if (!same_settings(values, g_saved_settings)) {
+        g_dialog_saved = false;
+        if ((!ImGui::IsAnyItemActive() && !g_dialog_save_failed) || now - g_last_settings_save >= 500) {
+            g_last_settings_save = now;
+            g_dialog_save_failed = !settings_save(g_settings_path, &values);
+            if (!g_dialog_save_failed) {
+                g_saved_settings = values;
+                g_dialog_saved = true;
+            }
+        }
+    }
+}
+
+void initialize_game_ui() {
+    g_menu_scale = platform::window_scale(g_sdl_window);
+    g_menu_fonts.load(13);
+    // Bake once at high density and scale down to fit the game viewport. This
+    // avoids rebuilding an atlas that the RT64 present thread is still using.
+    g_overlay_fonts.load(2.0f);
+    g_overlay_images.load(ImGui::GetIO().Fonts, 2.0f);
+    ImGui::GetIO().FontDefault = g_menu_fonts.at(g_menu_scale);
+}
+
+void prepare_game_ui() {
+    g_menu_scale = platform::window_scale(g_sdl_window);
+    if (g_ingame_visible.load()) {
+        int w, h;
+        SDL_GetWindowSize(g_sdl_window, &w, &h);
+        const float margin = std::min(24.0f * g_menu_scale, std::min(w, h) * .025f);
+        g_overlay_size = ImVec2(std::min(1040 * g_menu_scale, w - 2 * margin),
+                               std::min(800 * g_menu_scale, h - 2 * margin));
+        g_overlay_pos = ImVec2((w - g_overlay_size.x) / 2, (h - g_overlay_size.y) / 2);
+        const float scale = std::max(.1f, std::min({g_menu_scale, g_overlay_size.x / 960, g_overlay_size.y / 800}));
+        sw::begin_frame(scale, g_overlay_fonts);
+    } else {
+        ImGui::GetIO().FontGlobalScale = 1.0f;
+        ui::apply_style(g_menu_scale);
+        ImGui::GetIO().FontDefault = g_menu_fonts.at(g_menu_scale);
+    }
+}
+
+void draw_game_ui() {
+    if (g_ingame_visible.load()) {
+        draw_settings_contents();
+        save_settings_changes();
+        g_menu_open.store(false);
+    } else {
+        draw_menu_bar();
+        g_menu_open.store(ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel));
+    }
+}
+
+void close_settings_overlay() {
+    std::scoped_lock lock(g_app->presentQueue->inspectorMutex);
+    ScopedContext context(g_game_context);
+    if (g_pending_msaa >= 0) g_settings.msaa = g_pending_msaa;
+    settings_save(g_settings_path);
+    ImGui::ClosePopupsOverWindow(nullptr, false);
+    ImGui::ClearActiveID();
+    ImGui::GetIO().ClearInputKeys();
+    g_capture_target = CaptureTarget::None;
+    g_quit_confirmation = g_cancel_quit = false;
+    g_ingame_visible.store(false);
+    g_visible.store(false);
+}
+
+void show_settings_overlay(int page) {
+    std::scoped_lock lock(g_app->presentQueue->inspectorMutex);
+    ScopedContext context(g_game_context);
+    if (!g_ingame_visible.load()) {
+        g_dialog_saved = g_dialog_save_failed = false;
+        g_saved_settings = g_settings;
+        if (g_pending_msaa >= 0) g_saved_settings.msaa = g_pending_msaa;
+        g_last_settings_save = 0;
+        ImGui::GetIO().ClearInputKeys();
+    }
+    ImGui::ClosePopupsOverWindow(nullptr, false);
+    ImGui::ClearActiveID();
+    g_menu_open.store(false);
+    g_active = page;
+    g_capture_target = CaptureTarget::None;
+    g_about_details = false;
+    g_quit_confirmation = g_cancel_quit = false;
+    g_ingame_visible.store(true);
+    g_visible.store(true);
+    g_focus_content.store(true);
+}
+
 void render_settings_window() {
     if (!g_dialog_window)
         return;
@@ -882,20 +1062,7 @@ void render_settings_window() {
     ImGui_ImplSDL2_NewFrame();
     ImGui::NewFrame();
     draw_settings_contents();
-    auto values = g_settings;
-    if (g_pending_msaa >= 0)
-        values.msaa = g_pending_msaa;
-    if (!same_settings(values, g_saved_settings)) {
-        g_dialog_saved = false;
-        if ((!ImGui::IsAnyItemActive() && !g_dialog_save_failed) || now - g_last_settings_save >= 500) {
-            g_last_settings_save = now;
-            g_dialog_save_failed = !settings_save(g_settings_path, &values);
-            if (!g_dialog_save_failed) {
-                g_saved_settings = values;
-                g_dialog_saved = true;
-            }
-        }
-    }
+    save_settings_changes();
     ImGui::Render();
     const auto scale = ImGui::GetIO().DisplayFramebufferScale;
     SDL_RenderSetScale(g_dialog_renderer, scale.x, scale.y);
@@ -929,10 +1096,7 @@ void attach(RT64::Application& app) {
     io.BackendFlags |= ImGuiBackendFlags_HasGamepad;
 
     g_game_context = ImGui::GetCurrentContext();
-    g_menu_scale = platform::window_scale(g_sdl_window);
-    ui::apply_style(g_menu_scale);
-    g_menu_fonts.load(13);
-    io.FontDefault = g_menu_fonts.at(g_menu_scale);
+    initialize_game_ui();
 
     g_app = &app;
     g_attached = true;
@@ -948,6 +1112,7 @@ void detach(RT64::Application& app) {
         settings_save(g_settings_path);
     }
     g_visible.store(false, std::memory_order_release);
+    g_ingame_visible.store(false, std::memory_order_release);
     if (app.presentQueue != nullptr) {
         std::scoped_lock lock(app.presentQueue->inspectorMutex);
         app.presentQueue->inspector.reset();
@@ -964,12 +1129,9 @@ void draw(RT64::Application& app) {
     if (inspector == nullptr) return;
 
     ScopedContext context(g_game_context);
-    g_menu_scale = platform::window_scale(g_sdl_window);
-    ui::apply_style(g_menu_scale);
-    ImGui::GetIO().FontDefault = g_menu_fonts.at(g_menu_scale);
+    prepare_game_ui();
     inspector->newFrame(app.framebufferGraphicsWorker.get());
-    draw_menu_bar();
-    g_menu_open.store(ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel));
+    draw_game_ui();
     inspector->endFrame();
 }
 
@@ -996,31 +1158,87 @@ void process_actions() {
         if (!platform::open_folder(folder)) fprintf(stderr, "[menu] Could not open folder\n");
     }
     if (!g_attached || !g_app || !g_app->presentQueue) return;
-    if (g_dialog_close.exchange(false)) close_settings_window();
+    if (g_dialog_close.exchange(false)) {
+        if (g_ingame_visible.load()) close_settings_overlay();
+        else close_settings_window();
+    }
     const int page = g_page_request.exchange(-1);
-    if (page >= 0) show_settings_window(page);
+    if (page >= 0) {
+        if (g_ingame_visible.load()) close_settings_overlay();
+        show_settings_window(page);
+    }
+    const int overlayPage = g_overlay_page_request.exchange(-1);
+    if (overlayPage >= 0) {
+        if (g_dialog_window) close_settings_window();
+        show_settings_overlay(overlayPage);
+    }
     const bool paused = g_manual_pause || g_visible.load();
     if (paused != game_pause::is_paused()) {
         game_pause::set_paused(paused);
         audio_set_paused(paused);
         fprintf(stderr, "[game] %s\n", paused ? "Paused" : "Resumed");
     }
+    // SDL events, settings edits, controller selection and UI frame creation
+    // stay together on the main thread. RT64 consumes the completed draw data
+    // under the inspector lock on its present thread.
+    const auto now = SDL_GetTicks64();
+    if (now - g_game_last_frame >= 16) {
+        g_game_last_frame = now;
+        draw(*g_app);
+    }
     render_settings_window();
 }
 
 void cycle_page(int delta) {
-    g_page_request.store((g_active + delta + int(Page::Count)) % int(Page::Count));
+    request_settings_page((g_active + delta + int(Page::Count)) % int(Page::Count));
 }
 
-bool handle_event(SDL_Event* event) {
-    if (!g_attached || event == nullptr || !g_app || !g_app->presentQueue) return false;
-    std::scoped_lock lock(g_app->presentQueue->inspectorMutex);
-    auto* inspector = g_app->presentQueue->inspector.get();
-    if (!inspector) return false;
+// Let ImGui cancel an open combo or finish editing a slider first. Only a
+// second Back at the page level returns to the game.
+bool settings_back() {
+    if (ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel) ||
+        ImGui::IsAnyItemActive()) return false;
+    if (g_about_details) {
+        g_about_details = false;
+        g_focus_content.store(true);
+    } else {
+        g_dialog_close.store(true);
+    }
+    return true;
+}
+
+// Called with the inspector lock held. Keeping routing separate also lets the
+// ROM-free UI test exercise real SDL controller events and the native window.
+static bool route_event(SDL_Event* event) {
+    const auto currentId = input_current_controller_id();
+    auto* current = SDL_GameControllerFromInstanceID(currentId);
+    // SDL can queue synthetic button-up events before DEVICE_REMOVED. Do not
+    // mistake a disconnected controller's Back release for a settings shortcut.
+    const auto selected = current && SDL_GameControllerGetAttached(current) ? currentId : -1;
+    if (g_navigation_controller != selected) {
+        g_navigation_controller = selected;
+        g_settings_shortcut.reset();
+        g_navigation_state = {};
+        g_shortcut_blocks_input.store(false);
+        // A removed/replaced device may never send its button-up or neutral
+        // axis events. Release its navigation state in both ImGui contexts.
+        for (auto* target : {g_game_context, g_dialog_context}) {
+            if (!target) continue;
+            ScopedContext release(target);
+            for (int key = ImGuiKey_GamepadStart; key <= ImGuiKey_GamepadRStickDown; ++key)
+                ImGui::GetIO().AddKeyEvent(ImGuiKey(key), false);
+        }
+        g_capture_target = CaptureTarget::None;
+    }
     // Only the selected device may navigate or rebind the settings window.
     if ((event->type == SDL_CONTROLLERBUTTONDOWN || event->type == SDL_CONTROLLERBUTTONUP) &&
-        event->cbutton.which != input_current_controller_id()) return true;
-    if (event->type == SDL_CONTROLLERAXISMOTION && event->caxis.which != input_current_controller_id()) return true;
+        event->cbutton.which != selected) return true;
+    if (event->type == SDL_CONTROLLERAXISMOTION && event->caxis.which != selected) return true;
+    if ((event->type == SDL_CONTROLLERBUTTONDOWN || event->type == SDL_CONTROLLERBUTTONUP) &&
+        event->cbutton.button < input::button_count)
+        g_navigation_state.buttons[event->cbutton.button] = event->type == SDL_CONTROLLERBUTTONDOWN;
+    if (event->type == SDL_CONTROLLERAXISMOTION && event->caxis.axis < input::axis_count)
+        g_navigation_state.axes[event->caxis.axis] = event->caxis.value / 32767.f;
     const Uint32 dialogId = g_dialog_window ? SDL_GetWindowID(g_dialog_window) : 0;
     bool dialogEvent = false;
     switch (event->type) {
@@ -1043,6 +1261,28 @@ bool handle_event(SDL_Event* event) {
         g_capture_target=CaptureTarget::None;
     if (event->type == SDL_CONTROLLERDEVICEREMOVED)
         g_capture_target = CaptureTarget::None;
+
+    if ((event->type == SDL_CONTROLLERBUTTONDOWN || event->type == SDL_CONTROLLERBUTTONUP) &&
+        (event->cbutton.button == SDL_CONTROLLER_BUTTON_START || event->cbutton.button == SDL_CONTROLLER_BUTTON_BACK)) {
+        const bool capture = g_capture_target != CaptureTarget::None;
+        const bool shortcut = g_settings_shortcut.button(event->cbutton.button == SDL_CONTROLLER_BUTTON_START,
+            event->type == SDL_CONTROLLERBUTTONDOWN, !capture);
+        g_shortcut_blocks_input.store(g_settings_shortcut.blocks_gameplay());
+        if (shortcut) {
+            if (g_quit_confirmation) g_cancel_quit = true;
+            else toggle();
+            return true;
+        }
+        if (!capture && (event->cbutton.button == SDL_CONTROLLER_BUTTON_BACK ||
+                         g_settings_shortcut.blocks_gameplay())) return true;
+    }
+
+    if (g_quit_confirmation &&
+        ((event->type == SDL_CONTROLLERBUTTONDOWN && event->cbutton.button == SDL_CONTROLLER_BUTTON_B) ||
+         (event->type == SDL_KEYDOWN && !event->key.repeat && event->key.keysym.scancode == SDL_SCANCODE_ESCAPE))) {
+        g_cancel_quit = true;
+        return true;
+    }
 
     if (event->type == SDL_KEYDOWN && !event->key.repeat && event->key.keysym.scancode == SDL_SCANCODE_F1) {
         g_menu_visibility.store(menu_bar_visible() ? 0 : 1);
@@ -1093,7 +1333,7 @@ bool handle_event(SDL_Event* event) {
             return true;
     }
 
-    // Esc / Controller Back toggle settings and consume the event.
+    // Escape and the controller's right face button go back one UI level.
     if (event->type == SDL_KEYDOWN && !event->key.repeat) {
         const SDL_Scancode code = event->key.keysym.scancode;
         if (code == SDL_SCANCODE_PAUSE && !g_visible.load()) {
@@ -1101,14 +1341,14 @@ bool handle_event(SDL_Event* event) {
             return true;
         }
         if (code == SDL_SCANCODE_ESCAPE) {
-            toggle();
-            return true;
+            if (!g_visible.load()) { toggle(); return true; }
+            if (settings_back()) return true;
         }
-    }
-    if (event->type == SDL_CONTROLLERBUTTONDOWN &&
-        event->cbutton.button == SDL_CONTROLLER_BUTTON_BACK) {
-        toggle();
-        return true;
+        if (g_visible.load() && !ImGui::IsAnyItemActive() &&
+            !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel)) {
+            if (code == SDL_SCANCODE_PAGEUP) { cycle_page(-1); return true; }
+            if (code == SDL_SCANCODE_PAGEDOWN) { cycle_page(1); return true; }
+        }
     }
 
     if (event->type == SDL_KEYDOWN && !event->key.repeat &&
@@ -1118,17 +1358,18 @@ bool handle_event(SDL_Event* event) {
         return true;
     }
     if (g_visible.load() && event->type == SDL_CONTROLLERBUTTONDOWN) {
+        const bool editing = ImGui::IsAnyItemActive() ||
+            ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel);
         switch (event->cbutton.button) {
-            case SDL_CONTROLLER_BUTTON_LEFTSHOULDER: cycle_page(-1); return true;
-            case SDL_CONTROLLER_BUTTON_RIGHTSHOULDER: cycle_page(1); return true;
-            case SDL_CONTROLLER_BUTTON_B: g_dialog_close.store(true); return true;
+            case SDL_CONTROLLER_BUTTON_LEFTSHOULDER: if (!editing) { cycle_page(-1); return true; } break;
+            case SDL_CONTROLLER_BUTTON_RIGHTSHOULDER: if (!editing) { cycle_page(1); return true; } break;
+            case SDL_CONTROLLER_BUTTON_B: if (settings_back()) return true; break;
             default: break;
         }
     }
     // Feed pointer movement even while no dialog is open, so the persistent
     // top menu remains clickable. Inspector access is serialized with drawing.
-    if (dialogEvent) ImGui_ImplSDL2_ProcessEvent(event);
-    else inspector->handleSdlEvent(event);
+    ImGui_ImplSDL2_ProcessEvent(event);
     const bool capture = g_visible.load() || g_menu_open.load();
     if (capture) feed_controller_to_imgui(*event);
     if (event->type == SDL_MOUSEBUTTONDOWN || event->type == SDL_MOUSEBUTTONUP)
@@ -1140,13 +1381,25 @@ bool handle_event(SDL_Event* event) {
     return capture;
 }
 
+bool handle_event(SDL_Event* event) {
+    if (!g_attached || event == nullptr || !g_app || !g_app->presentQueue) return false;
+    std::scoped_lock lock(g_app->presentQueue->inspectorMutex);
+    auto* inspector = g_app->presentQueue->inspector.get();
+    if (!inspector) return false;
+    return route_event(event);
+}
+
 void toggle() {
     if (g_visible.load()) g_dialog_close.store(true);
-    else open_page(Page(g_active));
+    else {
+        g_overlay_page_request.store(g_active);
+        g_visible.store(true);
+    }
 }
 
 bool is_visible() {
-    return g_visible.load(std::memory_order_acquire) || g_menu_open.load(std::memory_order_acquire);
+    return g_visible.load(std::memory_order_acquire) || g_menu_open.load(std::memory_order_acquire) ||
+        g_shortcut_blocks_input.load(std::memory_order_acquire);
 }
 
 } // namespace overlay

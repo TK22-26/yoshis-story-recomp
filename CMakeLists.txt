@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(yoshis_story_recomp VERSION 1.0.1)
+project(yoshis_story_recomp VERSION 1.0.2)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED True)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -342,6 +342,17 @@ if(WIN32)
 
     include(CTest)
     if(BUILD_TESTING)
+        add_executable(settings_shortcut_test tests/settings_shortcut_test.cpp)
+        target_include_directories(settings_shortcut_test PRIVATE src)
+        add_test(NAME settings_shortcut COMMAND settings_shortcut_test)
+        add_executable(settings_window_test tests/settings_window_test.cpp src/launcher.cpp src/settings_widgets.cpp
+            src/ui_style.cpp src/ui_images.cpp src/platform.cpp src/controller_devices.cpp src/game_pause.cpp
+            "${UI_IMAGES_HEADER}" "${RT64_PATH}/src/contrib/imgui/backends/imgui_impl_sdlrenderer2.cpp")
+        target_include_directories(settings_window_test PRIVATE
+            $<TARGET_PROPERTY:yoshis_story_recomp,INCLUDE_DIRECTORIES>)
+        target_compile_definitions(settings_window_test PRIVATE HLSL_CPU FFX_GCC IMGUI_IMPL_VULKAN_NO_PROTOTYPES)
+        target_link_libraries(settings_window_test PRIVATE rt64 SDL2::SDL2 Threads::Threads dwmapi ole32 shell32 uuid)
+        add_test(NAME settings_window COMMAND settings_window_test)
         add_executable(rom_file_test tests/rom_file_test.cpp src/rom_file.cpp)
         target_include_directories(rom_file_test PRIVATE src)
         add_test(NAME rom_file COMMAND rom_file_test)

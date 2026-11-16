@@ -3,6 +3,7 @@
 #include "ui_style.h"
 #include "imgui.h"
 #include <SDL.h>
+namespace ui_images { struct AtlasImage; }
 
 // Native drawing primitives for the user's Settings HTML references.
 // All coordinates are device-independent pixels. Fonts come from the OS.
@@ -29,6 +30,8 @@ struct Fonts {
     void load(float density);
 };
 void begin_frame(float scale, Fonts &fonts);
+// Focus the first enabled control, even when it is inside a nested card.
+void focus_next_control();
 float scale();
 ImVec2 px(float x, float y);
 void at(float x, float y);
@@ -51,6 +54,7 @@ bool combo(const char *id, float x, float y, float w, int &selected, const char 
 bool slider(const char *id, float x, float y, float w, float h, float &value, float min, float max);
 bool toggle(const char *id, float x, float y, bool &value, bool warning = false);
 void image(SDL_Texture* texture, float x, float y, float w, float h);
+void image(const ui_images::AtlasImage& texture, float x, float y, float w, float h);
 void status(float x, float y, const char* label, bool connected);
 void gamepad(float x, float y, float size);
 void external_arrow(float x, float y);

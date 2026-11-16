@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.0.2
+
+- Open the full settings overlay inside the game with Start + Back / Select,
+  Esc, or a Back / Select tap, including in fullscreen. Start alone keeps its
+  normal game action. Desktop menu settings still open separate native windows.
+- Share Video, Audio, Controls, and About tabs across both views, with controller
+  navigation, contextual help, and large plain LB / RB labels above the settings.
+- Add Quit beside Return to game, with a confirmation that defaults to Cancel.
+- Preserve manual pause, pause game audio while settings are open, and restore
+  play when settings close. Keep controller navigation usable after a disconnect.
+- Add shortcut and settings regressions covering controller navigation, bindings,
+  pause/resume, native window ownership, the overlay, and Quit confirmation.
+
 ## 1.0.1
 
 - Replace the obsolete startup settings launcher with a native ROM picker.

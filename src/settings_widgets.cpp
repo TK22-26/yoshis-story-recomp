@@ -1,5 +1,6 @@
 #include "settings_widgets.h"
 #include "imgui_internal.h"
+#include "ui_images.h"
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -8,6 +9,14 @@ namespace settings_ui {
 namespace {
 float density = 1;
 Fonts *active_fonts = nullptr;
+float font_size(ImFont* f) { return f->FontSize * ImGui::GetIO().FontGlobalScale; }
+bool focus_next = false;
+void focus_control() {
+    if (focus_next && !(ImGui::GetCurrentContext()->CurrentItemFlags & ImGuiItemFlags_Disabled)) {
+        ImGui::SetKeyboardFocusHere();
+        focus_next = false;
+    }
+}
 ImU32 ink(ImU32 color) { return ImGui::GetColorU32(color); }
 ImVec4 rgba(ImU32 color) { return ImGui::ColorConvertU32ToFloat4(color); }
 ImFont *font(Type type) {
@@ -34,7 +43,7 @@ ImVec2 point(float x, float y) {
 }
 void centered(float x, float y, float w, float h, const char *label, ImU32 color, Type type = Type::Label) {
     auto *f = font(type);
-    const auto size = f->CalcTextSizeA(f->FontSize, FLT_MAX, 0, label);
+    const auto size = f->CalcTextSizeA(font_size(f), FLT_MAX, 0, label);
     text(x + (w - size.x / density) / 2, y + (h - size.y / density) / 2, label, color, type);
 }
 void rounded(float x, float y, float w, float h, ImU32 fill, ImU32 border, float radius) {
@@ -99,7 +108,7 @@ void shoulder_glyph(bool trigger, bool left, bool ps, float x, float y, float si
     const float tx = x + w * (trigger ? (left ? .66f : .34f) : .5f);
     const float ty = y + size * (trigger ? .66f : .5f);
     auto* f = font(Type::Shoulder);
-    const auto bounds = f->CalcTextSizeA(f->FontSize, FLT_MAX, 0, label);
+    const auto bounds = f->CalcTextSizeA(font_size(f), FLT_MAX, 0, label);
     text(tx - bounds.x / density / 2, ty - bounds.y / density / 2, label, Text, Type::Shoulder);
 }
 } // namespace
@@ -123,8 +132,10 @@ void at(float x, float y) { ImGui::SetCursorPos(px(x, y)); }
 float width() { return ImGui::GetWindowWidth() / density; }
 float height() { return ImGui::GetWindowHeight() / density; }
 void begin_frame(float value, Fonts &fonts) {
+    focus_next = false;
     density = value;
     active_fonts = &fonts;
+    ImGui::GetIO().FontGlobalScale = value / fonts.loaded_scale;
     ImGui::GetIO().FontDefault = font(Type::Body);
     ImGui::GetStyle() = ImGuiStyle{};
     auto &s = ImGui::GetStyle();
@@ -144,6 +155,7 @@ void begin_frame(float value, Fonts &fonts) {
     s.Colors[ImGuiCol_WindowBg] = rgba(Background);
     s.Colors[ImGuiCol_ChildBg] = rgba(Card);
     s.Colors[ImGuiCol_PopupBg] = rgba(Field);
+    s.Colors[ImGuiCol_ModalWindowDimBg] = rgba(IM_COL32(0, 0, 0, 160));
     s.Colors[ImGuiCol_Border] = rgba(Border);
     s.Colors[ImGuiCol_FrameBg] = rgba(Field);
     s.Colors[ImGuiCol_FrameBgHovered] = rgba(Hover);
@@ -165,23 +177,24 @@ void begin_frame(float value, Fonts &fonts) {
     s.Colors[ImGuiCol_ScrollbarGrabActive] = rgba(Accent);
     s.ScaleAllSizes(density);
 }
+void focus_next_control() { focus_next = true; }
 void text(float x, float y, const char *value, ImU32 color, Type type) {
     auto *f = font(type);
-    ImGui::GetWindowDrawList()->AddText(f, f->FontSize, point(x, y), ink(color), value);
+    ImGui::GetWindowDrawList()->AddText(f, font_size(f), point(x, y), ink(color), value);
 }
 void text_right(float right, float y, const char *value, ImU32 color, Type type) {
     auto *f = font(type);
-    text(right - f->CalcTextSizeA(f->FontSize, FLT_MAX, 0, value).x / density, y, value, color, type);
+    text(right - f->CalcTextSizeA(font_size(f), FLT_MAX, 0, value).x / density, y, value, color, type);
 }
 float paragraph(float x, float y, float wrap, const char *value, ImU32 color) {
     auto *f = font(Type::Small);
-    ImGui::GetWindowDrawList()->AddText(f, f->FontSize, point(x, y), ink(color), value, nullptr,
+    ImGui::GetWindowDrawList()->AddText(f, font_size(f), point(x, y), ink(color), value, nullptr,
                                         wrap * density);
-    return f->CalcTextSizeA(f->FontSize, FLT_MAX, wrap * density, value).y / density;
+    return f->CalcTextSizeA(font_size(f), FLT_MAX, wrap * density, value).y / density;
 }
 void caption(float x, float y, const char *value, ImU32 color) {
     auto *f = font(Type::Small);
-    const float size = f->FontSize * 11 / 12;
+    const float size = font_size(f) * 11 / 12;
     for (const char *p = value; *p; p++) {
         const char letter[] = {*p, 0};
         ImGui::GetWindowDrawList()->AddText(f, size, point(x, y), ink(color), letter);
@@ -193,13 +206,14 @@ void line(float x, float y, float w) {
 }
 void badge(float right, float y, const char *value) {
     auto *f = font(Type::Small);
-    float w = f->CalcTextSizeA(f->FontSize, FLT_MAX, 0, value).x / density + 16;
+    float w = f->CalcTextSizeA(font_size(f), FLT_MAX, 0, value).x / density + 16;
     rounded(right - w, y, w, 24, IM_COL32(10, 16, 12, 255), Border, 6);
     centered(right - w, y, w, 24, value, AccentText, Type::Small);
 }
 void begin_card(const char *id, float x, float y, float w, float h) {
     at(x, y);
-    ImGui::BeginChild(id, px(w, h), true, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+    ImGui::BeginChild(id, px(w, h), true, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse |
+                                       ImGuiWindowFlags_NavFlattened);
 }
 void end_card() { ImGui::EndChild(); }
 bool button(const char *id, const char *label, float x, float y, float w, float h, bool primary,
@@ -210,6 +224,7 @@ bool button(const char *id, const char *label, float x, float y, float w, float 
     ImGui::PushStyleColor(ImGuiCol_ButtonHovered, rgba(primary ? AccentText : Hover));
     ImGui::PushStyleColor(ImGuiCol_ButtonActive, rgba(primary ? AccentText : Selected));
     ImGui::PushStyleColor(ImGuiCol_Border, rgba(primary ? Accent : listening ? Accent : FieldBorder));
+    focus_control();
     const bool pressed = ImGui::Button("##button", px(w, h));
     centered(x, y, w, h, label, primary ? DarkText : listening ? AccentText : Text);
     if (listening) {
@@ -237,6 +252,7 @@ bool segments(const char *id, float x, float y, float w, const char *const *labe
         const bool on = selected == i;
         ImGui::PushStyleColor(ImGuiCol_Button, rgba(on ? Selected : IM_COL32(0, 0, 0, 0)));
         ImGui::PushStyleColor(ImGuiCol_Border, rgba(on ? Accent : IM_COL32(0, 0, 0, 0)));
+        focus_control();
         if (ImGui::Button("##segment", px(item, 36))) {
             selected = i;
             changed = true;
@@ -251,6 +267,7 @@ bool segments(const char *id, float x, float y, float w, const char *const *labe
 }
 bool combo(const char *id, float x, float y, float w, int &selected, const char *const *labels, int count,
            const char* preview, Type type) {
+    focus_control();
     at(x, y);
     ImGui::PushFont(font(type));
     ImGui::SetNextItemWidth(w * density);
@@ -276,6 +293,7 @@ bool combo(const char *id, float x, float y, float w, int &selected, const char 
     return changed;
 }
 bool slider(const char *id, float x, float y, float w, float h, float &value, float min, float max) {
+    focus_control();
     at(x, y);
     ImGui::SetNextItemWidth(w * density);
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, px(0, (h - ImGui::GetFontSize() / density) / 2));
@@ -294,6 +312,7 @@ bool slider(const char *id, float x, float y, float w, float h, float &value, fl
     return changed;
 }
 bool toggle(const char *id, float x, float y, bool &value, bool warning) {
+    focus_control();
     at(x, y);
     ImGui::PushID(id);
     ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 15 * density);
@@ -321,9 +340,23 @@ void image(SDL_Texture* texture, float x, float y, float w, float h) {
     ImGui::GetWindowDrawList()->AddImage((ImTextureID)texture, point(x, y), point(x + dw, y + dh),
                                         ImVec2(0, 0), ImVec2(1, 1), ink(IM_COL32_WHITE));
 }
+void image(const ui_images::AtlasImage& image, float x, float y, float w, float h) {
+    if (image.rect < 0 || image.width <= 0 || image.height <= 0) return;
+    auto* atlas = ImGui::GetIO().Fonts;
+    const auto* rect = atlas->GetCustomRectByIndex(image.rect);
+    const float fit = std::min(w / image.width, h / image.height);
+    const float dw = image.width * fit, dh = image.height * fit;
+    x += (w - dw) / 2;
+    y += (h - dh) / 2;
+    const ImVec2 uv0((rect->X + 1.f) / atlas->TexWidth, (rect->Y + 1.f) / atlas->TexHeight);
+    const ImVec2 uv1((rect->X + 1.f + image.width) / atlas->TexWidth,
+                    (rect->Y + 1.f + image.height) / atlas->TexHeight);
+    ImGui::GetWindowDrawList()->AddImage(atlas->TexID, point(x, y), point(x + dw, y + dh), uv0, uv1,
+                                       ink(IM_COL32_WHITE));
+}
 void status(float x, float y, const char* label, bool connected) {
     const auto color = connected ? Accent : Warning;
-    const float lineHeight = font(Type::Small)->FontSize / density;
+    const float lineHeight = font_size(font(Type::Small)) / density;
     ImGui::GetWindowDrawList()->AddCircleFilled(point(x + 3, y + lineHeight / 2), 3 * density, ink(color));
     text(x + 13, y, label, color, Type::Small);
 }

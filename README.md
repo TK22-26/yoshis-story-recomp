@@ -3,13 +3,13 @@
 [![Windows checks](https://github.com/TK22-26/yoshis-story-recomp/actions/workflows/windows.yml/badge.svg?branch=main)](https://github.com/TK22-26/yoshis-story-recomp/actions/workflows/windows.yml)
 
 A native **Windows x64** recompilation of Yoshi's Story for Nintendo 64.
-**Version 1.0.1 supports the original USA ROM.** Open the app, select your ROM
+**Version 1.0.2 supports the original USA ROM.** Open the app, select your ROM
 in the native file picker, and play. No developer tools or first-run compilation
-are needed. This version replaces the withdrawn 1.0.0 download.
+are needed. Start + Back opens the controller settings overlay inside the game.
 
 [Windows downloads](https://github.com/TK22-26/yoshis-story-recomp/releases) |
 [Install and play](#getting-started-on-windows) | [Controls](#controls) |
-[Changelog](CHANGELOG.md) | [Release verification and limits](https://github.com/TK22-26/yoshis-story-recomp/blob/main/docs/releases/1.0.1.md)
+[Changelog](CHANGELOG.md) | [Release verification and limits](https://github.com/TK22-26/yoshis-story-recomp/blob/main/docs/releases/1.0.2.md)
 
 This is TK22-26's Windows fork of
 [damobeanrod's Linux port](https://github.com/damobeanrod/yoshis-story-recomp),
@@ -28,7 +28,7 @@ listed in [assets/README.md](https://github.com/TK22-26/yoshis-story-recomp/blob
 | Feature | Details |
 | --- | --- |
 | Native rendering | Direct3D 12 by default, Vulkan fallback, resolution scaling, anti-aliasing, filtering, and optional CRT effects |
-| Desktop interface | Compact top menu, green theme, native owned settings dialogs, installed Windows fonts, and DPI-aware diagrams |
+| Desktop interface | Compact top menu with native settings windows, controller settings overlay, green theme, installed Windows fonts, and DPI-aware diagrams |
 | Window modes | Windowed, borderless window, and borderless fullscreen with corrected monitor coverage |
 | Controls | Saved controller selection; keyboard, button, trigger, and stick-direction rebinding; one controller input per action |
 | Controller glyphs | Xbox labels and PlayStation shapes, triangular triggers, and rectangular bumpers |
@@ -50,7 +50,11 @@ owned settings windows, pause/resume, restart, and all three window modes.
 Fullscreen client/frame bounds match the physical monitor; exiting restores
 the previous window size and style. Automated tests cover RDRAM aliases,
 the pause clock, texture boundaries, axis rebinding and persistence, and SDL
-controller selection/reconnect without a ROM. Release checks additionally verify
+controller selection/reconnect without a ROM. The full build also exercises
+the real settings overlay with an SDL virtual controller: Start + Back, tabs,
+D-pad/stick navigation, dropdowns, sliders, rebinding, scrolling, persistence,
+and disconnect recovery. It also checks that desktop menu entries still open
+separate settings windows. Release checks additionally verify
 the package inventory, checksums, and compiled source identity.
 
 The storybook seam correction was also tested separately on upstream Linux
@@ -66,7 +70,7 @@ retested.
 
 ## Getting started on Windows
 
-1. Download `Yoshis-Story-1.0.1-windows-x64.zip` from the
+1. Download `Yoshis-Story-1.0.2-windows-x64.zip` from the
    [releases page](https://github.com/TK22-26/yoshis-story-recomp/releases).
 2. Extract the entire ZIP into a writable folder. Keep all DLLs beside
    `yoshis_story_recomp.exe`.
@@ -104,7 +108,7 @@ and copy your existing data folder across to retain the ROM, saves, and settings
 The release's empty data folder contains no personal files.
 
 Each release has a matching `.sha256` file and `.inventory.json`. To check your
-ZIP in PowerShell, run `Get-FileHash .\Yoshis-Story-1.0.1-windows-x64.zip -Algorithm SHA256`
+ZIP in PowerShell, run `Get-FileHash .\Yoshis-Story-1.0.2-windows-x64.zip -Algorithm SHA256`
 and compare it with the checksum file. Maintainer preparation and publication
 are described in [the release guide](https://github.com/TK22-26/yoshis-story-recomp/blob/main/docs/releases/maintenance.md).
 
@@ -129,7 +133,7 @@ powershell -ExecutionPolicy Bypass -File tools/build_windows.ps1 -Rom 'C:\Games\
 
 The helper downloads SDL 2.32.10 with a pinned SHA-256, checks out
 N64ModernRuntime at `cdf5abbd5026fef5c364c676e4667c45e42b6863` under `.deps/`,
-builds the game and RSP audio recompiler, and runs the five runtime/input tests.
+builds the game and RSP audio recompiler, and runs the runtime, input, and settings tests.
 The ROM is copied only to the ignored local `data/` directory. Generated
 audio code stays under `build/rsp/`.
 
@@ -351,9 +355,27 @@ keyboard. Device availability and feature support depend on the SDL mapping. Rum
 | C buttons | I J K L | Right stick |
 | D-pad | T F G H | D-pad |
 
-Use **Controllers > Controller mapping** to remap inputs, or **Esc** /
-controller **Back** to open settings. Settings are native windows owned by the
-game window. They pause the game until closed, preserving a manual pause.
+Press **Start + Back / Select together** to open settings as an **in-game overlay**.
+Either button order works; release both before using the shortcut again.
+**Start alone** retains its normal game action. **Esc** or a **Back / Select tap**
+also opens the overlay. It dims the game behind it and stays inside the game
+window, including in fullscreen. Settings pause the game and audio until closed,
+preserving a manual pause.
+
+The overlay follows Longshot's tabbed settings flow, with **Video**,
+**Audio**, **Controls**, and **About** always available in the tab strip. Use
+**LB / RB** (PlayStation **L1 / R1**) to switch tabs, **D-pad / left stick** to
+move, and **A / Cross** to select. Select a slider with A, adjust with left/right,
+then press A or B to finish. **B / Circle** goes back: it dismisses a dropdown or
+finishes slider editing before returning to the game. **Start + Back** closes
+the overlay directly. The footer shows controller hints and help for the focused
+setting. Shoulder-button prompts flank the tabs. **Quit** in the footer asks
+for confirmation, with Cancel selected by default; B/Esc cancels.
+Keyboard users can use Tab/arrows, Enter, Esc, and Page Up/Page Down.
+Changes save automatically. **Desktop menu entries keep opening separate native
+settings windows**, owned by the game window, at the requested tab;
+**Controllers > Controller mapping** opens a Controls window. Both views share
+the same settings and controller navigation.
 
 Video, Audio, Controls, and About use the supplied settings designs: rounded
 dark-green cards, segmented options, switches, and controller glyphs drawn in
@@ -365,11 +387,12 @@ Changes save while the dialog is open; anti-aliasing
 still requires a restart. Controls supports scrolling, keyboard/controller
 rebinding, and reset to defaults. Every controller cell accepts a button,
 trigger, or signed stick direction. Release held inputs before moving the
-desired control; Esc cancels. Rebinding replaces the previous controller
+desired control; Back / Select or Esc cancels. Rebinding replaces the previous controller
 assignment while keeping its keyboard key. Each action accepts only one
 controller input; R defaults to RB. Axis mappings and direction are
 saved with the other settings. About links to the projects and keeps the
-credits and shortcut list accessible from its footer.
+credits and shortcut list accessible from its footer. B returns from credits to
+the About overview before closing settings.
 
 The Controls device dropdown lists the PC's connected gamepads. Selecting one
 switches both gameplay and settings navigation to that device and remembers

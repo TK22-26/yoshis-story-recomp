@@ -689,7 +689,7 @@ public:
             g_vi_yscale   = vi->VI_Y_SCALE_REG;
         }
 
-        overlay::draw(*app);
+        // The main thread builds UI frames in overlay::process_actions().
         // Present the completed image again with fresh UI while paused. Do
         // not replay the display list: repeated alpha blending would change
         // the frozen picture even though the guest itself has stopped.
